@@ -24,11 +24,11 @@ output "nat_public_ip" {
 }
 
 output "egress_id" {
-  value = var.nat_gateway_enabled ? module.vpc.natgw_ids[0] : aws_route.private_via_nat_instance[0].id
+  value = var.nat_gateway_enabled ? module.vpc.private_nat_gateway_route_ids[0] : aws_route.private_via_nat_instance[0].id
 
   description = <<-EOT
-    Identifies the private subnets' outbound path (the NAT instance route or
-    the NAT Gateway). Workloads that need egress to shut down cleanly (e.g. an
+    Identifies the private subnets' outbound path (the default route to the
+    NAT instance or the NAT Gateway). Workloads that need egress to shut down cleanly (e.g. an
     ECS agent draining a service) take it as a dependency so Terraform keeps
     the path until they are gone.
   EOT

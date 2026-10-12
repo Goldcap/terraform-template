@@ -107,9 +107,14 @@ else
   echo "  SKIP  /admin/ login (no permission to read ${ADMIN_SECRET_ARN})"
 fi
 
-# Every enabled platform must actually be serving traffic through the ALB.
+# Every enabled platform with traffic weight must actually be serving traffic
+# through the ALB. A weight of 0 drains a platform on purpose.
 SERVED_BY=$(for _ in $(seq 1 30); do curl -s --max-time 10 "${BASE_URL}/" | grep -o 'Served by [A-Z0-9]*' || true; done | sort | uniq -c)
 for platform in $PLATFORMS; do
+  if [ "$(jq -r --arg p "$platform" '.platform_weights.value[$p] // 1' <<<"$OUTPUTS")" = "0" ]; then
+    echo "  SKIP  Platform ${platform} has traffic weight 0"
+    continue
+  fi
   label=$(tr '[:lower:]' '[:upper:]' <<<"$platform")
   check "Platform ${platform} is serving requests through the ALB" grep -q "Served by ${label}" <<<"$SERVED_BY"
 done

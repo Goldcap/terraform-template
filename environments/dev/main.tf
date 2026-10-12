@@ -128,8 +128,10 @@ module "web_ecs" {
   max_size                  = var.web_max_size
   cpu_target_utilization    = var.cpu_target_utilization
 
-  # Keep the NAT path until the service has drained (see modules/web-ecs).
-  egress_dependency = module.network.egress_id
+  # Keep the NAT path until the service has drained, and create the service
+  # only once the listener forwards to it (see modules/web-ecs).
+  egress_dependency   = module.network.egress_id
+  listener_dependency = module.alb.listener_arn
 
   permissions_boundary = local.permissions_boundary_arn
 }
@@ -144,6 +146,13 @@ locals {
   # CI roles created by environments/bootstrap (same naming convention).
   ci_apply_role_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project}-github-apply"
   ci_plan_role_arn  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project}-github-plan"
+
+  # Principals that get an explicit EKS access entry. Whoever creates the
+  # cluster only gets EKS's automatic admin entry if they aren't one of
+  # these, or the two entries would collide. In CI the plan runs as the plan
+  # role and the saved plan is applied by the apply role, so both count.
+  eks_admin_principal_arns = distinct(concat([local.ci_apply_role_arn], var.eks_admin_principal_arns))
+  eks_explicit_principals  = concat(local.eks_admin_principal_arns, [local.ci_plan_role_arn])
 }
 
 module "web_eks" {
@@ -163,11 +172,10 @@ module "web_eks" {
   app_values = [file("${path.module}/helm/hello-world.yaml")]
 
   # CI applies as cluster admin and plans with read-only access. Whoever
-  # creates the cluster gets admin too, unless that's the CI apply role,
-  # which already has an access entry.
-  cluster_admin_principal_arns    = distinct(concat([local.ci_apply_role_arn], var.eks_admin_principal_arns))
+  # creates the cluster gets admin too, unless they already have an entry.
+  cluster_admin_principal_arns    = local.eks_admin_principal_arns
   cluster_viewer_principal_arns   = [local.ci_plan_role_arn]
-  bootstrap_cluster_creator_admin = data.aws_iam_session_context.current.issuer_arn != local.ci_apply_role_arn
+  bootstrap_cluster_creator_admin = !contains(local.eks_explicit_principals, data.aws_iam_session_context.current.issuer_arn)
 
   permissions_boundary = local.permissions_boundary_arn
 }

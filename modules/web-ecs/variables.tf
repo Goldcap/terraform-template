@@ -126,3 +126,10 @@ variable "permissions_boundary" {
 
   description = "ARN of the IAM permissions boundary to set on every role this module creates (the bootstrap stack's workload_boundary_arn)"
 }
+
+variable "listener_dependency" {
+  type    = string
+  default = null
+
+  description = "Pass the ALB listener ARN. The service is created after the listener forwards to its target group (ECS requires that) and destroyed before it."
+}

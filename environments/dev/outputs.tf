@@ -43,6 +43,11 @@ output "enabled_platforms" {
   description = "Web platforms currently serving behind the load balancer"
 }
 
+output "platform_weights" {
+  value       = { for platform in keys(local.platforms) : platform => lookup(var.platform_weights, platform, 1) }
+  description = "Share of load balancer traffic each enabled platform receives"
+}
+
 output "target_group_arns" {
   value       = { for platform, config in local.platforms : platform => config.target_group_arn }
   description = "Load balancer target group per enabled platform"

@@ -11,7 +11,9 @@ resource "aws_cloudwatch_dashboard" "this" {
   dashboard_name = var.name
 
   dashboard_body = jsonencode({
-    widgets = [
+    # The memory widget is left out when no platform reports memory (EKS only):
+    # CloudWatch rejects a widget with no metrics.
+    widgets = concat([
       {
         type   = "metric"
         x      = 0
@@ -32,8 +34,7 @@ resource "aws_cloudwatch_dashboard" "this" {
           }
           yAxis = { left = { min = 0, max = 100 } }
         }
-      },
-      {
+        }], length(local.memory_sources) == 0 ? [] : [{
         type   = "metric"
         x      = 12
         y      = 0
@@ -53,8 +54,7 @@ resource "aws_cloudwatch_dashboard" "this" {
           }
           yAxis = { left = { min = 0, max = 100 } }
         }
-      },
-      {
+        }], [{
         type   = "metric"
         x      = 0
         y      = 6
@@ -90,6 +90,6 @@ resource "aws_cloudwatch_dashboard" "this" {
           yAxis = { left = { min = 0 } }
         }
       }
-    ]
+    ])
   })
 }

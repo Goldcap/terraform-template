@@ -33,8 +33,12 @@ resource "helm_release" "load_balancer_controller" {
 
   wait = true
 
+  # The access entries outlive the releases, so whoever runs destroy can
+  # still uninstall them even if they aren't the cluster creator.
   depends_on = [
     terraform_data.egress,
+    aws_eks_access_policy_association.admins,
+    aws_eks_access_policy_association.viewers,
     aws_eks_pod_identity_association.load_balancer_controller,
     aws_iam_role_policy.load_balancer_controller,
     aws_eks_addon.after_nodes,

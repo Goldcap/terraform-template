@@ -8,6 +8,12 @@ variable "project" {
     condition     = can(regex("^[a-z][a-z0-9-]{2,18}$", var.project))
     error_message = "project must be 3-19 lowercase alphanumeric characters or hyphens, starting with a letter."
   }
+
+  # ECS capacity provider names may not start with these.
+  validation {
+    condition     = !can(regex("^(aws|ecs|fargate)", var.project))
+    error_message = "project must not start with \"aws\", \"ecs\" or \"fargate\" (reserved by ECS)."
+  }
 }
 
 variable "github_repository" {

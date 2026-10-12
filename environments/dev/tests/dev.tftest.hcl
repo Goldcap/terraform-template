@@ -152,6 +152,35 @@ run "eks_can_be_enabled_alongside_the_others" {
   }
 }
 
+run "eks_creator_admin_only_when_not_already_listed" {
+  command = plan
+
+  variables {
+    enable_eks = true
+  }
+
+  assert {
+    condition     = local.permissions_boundary_arn == "arn:aws:iam::123456789012:policy/hello-world-workload-boundary"
+    error_message = "Roles must carry the bootstrap stack's workload boundary."
+  }
+
+  # A developer outside the explicit list gets EKS's automatic creator entry.
+  assert {
+    condition     = !contains(local.eks_explicit_principals, data.aws_iam_session_context.current.issuer_arn)
+    error_message = "A developer who isn't listed should get the cluster creator's admin entry."
+  }
+
+  # In CI the plan role computes the plan and the apply role applies it, so
+  # neither may also get the automatic entry, or it collides with theirs.
+  assert {
+    condition = alltrue([
+      for arn in ["arn:aws:iam::123456789012:role/hello-world-github-plan", "arn:aws:iam::123456789012:role/hello-world-github-apply"] :
+      contains(local.eks_explicit_principals, arn)
+    ])
+    error_message = "Both CI roles must be treated as already having cluster access."
+  }
+}
+
 run "rejects_disabling_every_platform" {
   command = plan
 
@@ -181,4 +210,14 @@ run "rejects_an_assume_role_arn_that_is_not_a_role" {
   }
 
   expect_failures = [var.assume_role_arn]
+}
+
+run "rejects_a_project_name_reserved_by_ecs" {
+  command = plan
+
+  variables {
+    project = "ecs-demo"
+  }
+
+  expect_failures = [var.project]
 }

@@ -60,6 +60,12 @@ resource "aws_ecs_task_definition" "nginx" {
   ])
 }
 
+# ECS rejects a service whose target group isn't attached to a load balancer
+# yet, so the service waits for the listener (and is destroyed before it).
+resource "terraform_data" "listener" {
+  input = var.listener_dependency
+}
+
 resource "aws_ecs_service" "nginx" {
   name            = "${var.name}-nginx"
   cluster         = aws_ecs_cluster.this.id
@@ -106,6 +112,7 @@ resource "aws_ecs_service" "nginx" {
     aws_iam_role_policy.task_execution,
     aws_vpc_security_group_egress_rule.https,
     terraform_data.egress,
+    terraform_data.listener,
   ]
 
   lifecycle {
