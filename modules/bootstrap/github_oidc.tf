@@ -105,7 +105,9 @@ data "aws_iam_policy_document" "terraform_apply" {
       "ec2:*",
       "elasticloadbalancing:*",
       "autoscaling:*",
-      "cloudwatch:*"
+      "cloudwatch:*",
+      "ecs:*",
+      "application-autoscaling:*"
     ]
     resources = ["*"]
 
@@ -128,6 +130,16 @@ data "aws_iam_policy_document" "terraform_apply" {
     effect    = "Allow"
     actions   = ["secretsmanager:*"]
     resources = ["arn:aws:secretsmanager:${local.region}:${local.account_id}:secret:${var.project}-*"]
+  }
+
+  statement {
+    sid     = "ManageProjectLogGroups"
+    effect  = "Allow"
+    actions = ["logs:*"]
+    resources = [
+      "arn:aws:logs:${local.region}:${local.account_id}:log-group:/ecs/${var.project}-*",
+      "arn:aws:logs:${local.region}:${local.account_id}:log-group:/ecs/${var.project}-*:*"
+    ]
   }
 
   statement {
@@ -168,8 +180,27 @@ data "aws_iam_policy_document" "terraform_apply" {
     ]
   }
 
+  # Only the AWS managed policies the project actually attaches.
   statement {
-    sid       = "PassProjectRolesToEc2"
+    sid    = "AttachApprovedManagedPolicies"
+    effect = "Allow"
+    actions = [
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy"
+    ]
+    resources = ["arn:aws:iam::${local.account_id}:role/${var.project}-*"]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "iam:PolicyARN"
+      values = [
+        "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+      ]
+    }
+  }
+
+  statement {
+    sid       = "PassProjectRolesToServices"
     effect    = "Allow"
     actions   = ["iam:PassRole"]
     resources = ["arn:aws:iam::${local.account_id}:role/${var.project}-*"]
@@ -177,7 +208,10 @@ data "aws_iam_policy_document" "terraform_apply" {
     condition {
       test     = "StringEquals"
       variable = "iam:PassedToService"
-      values   = ["ec2.amazonaws.com"]
+      values = [
+        "ec2.amazonaws.com",
+        "ecs-tasks.amazonaws.com"
+      ]
     }
   }
 
@@ -192,7 +226,9 @@ data "aws_iam_policy_document" "terraform_apply" {
       variable = "iam:AWSServiceName"
       values = [
         "autoscaling.amazonaws.com",
-        "elasticloadbalancing.amazonaws.com"
+        "elasticloadbalancing.amazonaws.com",
+        "ecs.amazonaws.com",
+        "ecs.application-autoscaling.amazonaws.com"
       ]
     }
   }
