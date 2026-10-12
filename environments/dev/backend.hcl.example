@@ -1,0 +1,4 @@
+# Copy to backend.hcl, then: terraform init -backend-config=backend.hcl
+# The bucket name is printed by the bootstrap stack's state_bucket output.
+bucket = "hello-world-tfstate-123456789012-us-east-1"
+region = "us-east-1"

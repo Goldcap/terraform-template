@@ -5,8 +5,8 @@ variable "project" {
   description = "Project name, used as a prefix for every resource. Must match the project used by the environments."
 
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{2,20}$", var.project))
-    error_message = "project must be 3-21 lowercase alphanumeric characters or hyphens, starting with a letter."
+    condition     = can(regex("^[a-z][a-z0-9-]{2,18}$", var.project))
+    error_message = "project must be 3-19 lowercase alphanumeric characters or hyphens, starting with a letter."
   }
 }
 
