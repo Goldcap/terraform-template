@@ -91,7 +91,15 @@ resource "aws_ecs_service" "nginx" {
   # runs against a working deployment.
   wait_for_steady_state = true
 
-  depends_on = [aws_ecs_cluster_capacity_providers.this]
+  # Destroy order matters: the ECS agent needs its IAM policy and HTTPS
+  # egress until the service has fully drained, or it disconnects and the
+  # service is stuck in DRAINING (the delete times out after 20 minutes).
+  depends_on = [
+    aws_ecs_cluster_capacity_providers.this,
+    aws_iam_role_policy_attachment.instances_ecs_agent,
+    aws_iam_role_policy.task_execution,
+    aws_vpc_security_group_egress_rule.https,
+  ]
 
   lifecycle {
     # Owned by the service auto scaling policy below.
@@ -118,6 +126,15 @@ resource "aws_lb_target_group" "ecs" {
   }
 
   tags = { Name = "${var.name}-ecs" }
+
+  # Shared-ALB ordering: the listener forwards to this group, so when a
+  # platform is switched off the listener must be updated BEFORE the group is
+  # deleted. create_before_destroy makes Terraform order it that way; without
+  # it the delete runs first and fails with ResourceInUse. (A replacement of
+  # this group would need a new name, since names are unique.)
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Task count: hold average service CPU at the target, between min and max.

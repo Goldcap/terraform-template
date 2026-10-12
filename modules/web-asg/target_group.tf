@@ -18,4 +18,13 @@ resource "aws_lb_target_group" "web" {
   }
 
   tags = { Name = "${var.name}-web" }
+
+  # Shared-ALB ordering: the listener forwards to this group, so when a
+  # platform is switched off the listener must be updated BEFORE the group is
+  # deleted. create_before_destroy makes Terraform order it that way; without
+  # it the delete runs first and fails with ResourceInUse. (A replacement of
+  # this group would need a new name, since names are unique.)
+  lifecycle {
+    create_before_destroy = true
+  }
 }
