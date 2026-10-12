@@ -67,7 +67,7 @@ resource "aws_launch_template" "web" {
 
   user_data = base64encode(templatefile("${path.module}/templates/user_data.sh.tftpl", {
     region                  = data.aws_region.current.region
-    admin_secret_arn        = aws_secretsmanager_secret.admin.arn
+    admin_secret_arn        = var.admin_secret_arn
     health_check_path       = var.health_check_path
     cloudwatch_agent_config = local.cloudwatch_agent_config
   }))
@@ -83,9 +83,6 @@ resource "aws_launch_template" "web" {
   }
 
   update_default_version = true
-
-  # Instances read the secret at boot, so it must have a value first.
-  depends_on = [aws_secretsmanager_secret_version.admin]
 }
 
 resource "aws_autoscaling_group" "web" {

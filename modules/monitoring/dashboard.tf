@@ -2,6 +2,8 @@ data "aws_region" "current" {}
 
 locals {
   region = data.aws_region.current.region
+
+  dimension_list = { for key, source in local.cpu_sources : key => flatten([for name, value in source.dimensions : [name, value]]) }
 }
 
 # Up to 3 dashboards are free.
@@ -22,7 +24,8 @@ resource "aws_cloudwatch_dashboard" "this" {
           stat   = "Average"
           period = 300
           metrics = [
-            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", var.autoscaling_group_name]
+            for key, source in local.cpu_sources :
+            concat([source.namespace, "CPUUtilization"], local.dimension_list[key], [{ label = key }])
           ]
           annotations = {
             horizontal = [{ label = "Alarm", value = var.cpu_alarm_threshold }]
@@ -42,7 +45,8 @@ resource "aws_cloudwatch_dashboard" "this" {
           stat   = "Average"
           period = 300
           metrics = [
-            [var.metrics_namespace, "mem_used_percent", "AutoScalingGroupName", var.autoscaling_group_name]
+            for key, source in local.memory_sources :
+            concat([source.namespace, source.metric_name], flatten([for name, value in source.dimensions : [name, value]]), [{ label = key }])
           ]
           annotations = {
             horizontal = [{ label = "Alarm", value = var.memory_alarm_threshold }]
@@ -75,13 +79,13 @@ resource "aws_cloudwatch_dashboard" "this" {
         width  = 12
         height = 6
         properties = {
-          title  = "Instances"
+          title  = "Healthy targets per platform"
           region = local.region
+          stat   = "Minimum"
           period = 60
           metrics = [
-            ["AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", var.target_group_arn_suffix, "LoadBalancer", var.alb_arn_suffix, { stat = "Minimum", label = "Healthy targets" }],
-            ["AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", var.autoscaling_group_name, { stat = "Average", label = "In service" }],
-            ["AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", var.autoscaling_group_name, { stat = "Average", label = "Desired" }]
+            for key, target_group in var.target_groups :
+            ["AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", target_group, "LoadBalancer", var.alb_arn_suffix, { label = key }]
           ]
           yAxis = { left = { min = 0 } }
         }

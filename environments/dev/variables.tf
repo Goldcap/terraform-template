@@ -79,18 +79,56 @@ variable "alarm_email" {
   description = "Email address for CloudWatch alarm and budget notifications"
 }
 
+variable "enable_ec2" {
+  type    = bool
+  default = true
+
+  description = "Serve the site from nginx on an EC2 Auto Scaling Group (modules/web-asg)"
+}
+
+variable "enable_ecs" {
+  type    = bool
+  default = true
+
+  description = "Serve the site from an nginx service on ECS with an EC2 capacity provider (modules/web-ecs)"
+
+  validation {
+    condition     = var.enable_ec2 || var.enable_ecs
+    error_message = "Enable at least one web platform (enable_ec2 or enable_ecs)."
+  }
+}
+
+variable "platform_weights" {
+  type    = map(number)
+  default = {}
+
+  description = "Load balancer weight per enabled platform, e.g. { ec2 = 1, ecs = 3 }. Platforms not listed get weight 1."
+
+  validation {
+    condition     = alltrue([for platform in keys(var.platform_weights) : contains(["ec2", "ecs"], platform)])
+    error_message = "platform_weights keys must be platform names: ec2 or ecs."
+  }
+}
+
+variable "admin_password_version" {
+  type    = number
+  default = 1
+
+  description = "Increment to generate and store a new /admin/ password in Secrets Manager"
+}
+
 variable "web_min_size" {
   type    = number
   default = 1
 
-  description = "Minimum number of web servers"
+  description = "Minimum number of web servers (EC2) or tasks and container instances (ECS)"
 }
 
 variable "web_max_size" {
   type    = number
   default = 3
 
-  description = "Maximum number of web servers"
+  description = "Maximum number of web servers (EC2) or tasks and container instances (ECS)"
 }
 
 variable "cpu_alarm_threshold" {

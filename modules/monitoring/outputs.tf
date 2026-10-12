@@ -8,7 +8,7 @@ output "dashboard_name" {
   description = "Name of the CloudWatch dashboard"
 }
 
-output "cpu_alarm_name" {
-  value       = aws_cloudwatch_metric_alarm.cpu_high.alarm_name
-  description = "Name of the high CPU alarm"
+output "cpu_alarm_names" {
+  value       = [for alarm in aws_cloudwatch_metric_alarm.cpu_high : alarm.alarm_name]
+  description = "Names of the high CPU alarms, one per platform"
 }

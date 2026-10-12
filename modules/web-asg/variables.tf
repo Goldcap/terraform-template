@@ -10,21 +10,22 @@ variable "vpc_id" {
   description = "ID of the VPC"
 }
 
-variable "public_subnet_ids" {
-  type = list(string)
-
-  description = "Public subnet IDs for the Application Load Balancer (at least 2 AZs)"
-
-  validation {
-    condition     = length(var.public_subnet_ids) >= 2
-    error_message = "An Application Load Balancer needs subnets in at least two availability zones."
-  }
-}
-
 variable "private_subnet_ids" {
   type = list(string)
 
   description = "Private subnet IDs for the web server Auto Scaling Group"
+}
+
+variable "alb_security_group_id" {
+  type = string
+
+  description = "Security group of the load balancer (modules/alb) that fronts the web servers"
+}
+
+variable "admin_secret_arn" {
+  type = string
+
+  description = "ARN of the Secrets Manager secret ({\"username\", \"password\"}) protecting /admin/"
 }
 
 variable "bastion_security_group_id" {
@@ -77,13 +78,6 @@ variable "cpu_target_utilization" {
   }
 }
 
-variable "alb_ingress_cidrs" {
-  type    = list(string)
-  default = ["0.0.0.0/0"]
-
-  description = "CIDR blocks allowed to reach the load balancer on port 80"
-}
-
 variable "health_check_path" {
   type    = string
   default = "/health"
@@ -96,18 +90,4 @@ variable "metrics_namespace" {
   default = "CWAgent"
 
   description = "CloudWatch namespace the CloudWatch agent publishes memory metrics to"
-}
-
-variable "admin_password_version" {
-  type    = number
-  default = 1
-
-  description = "Increment to generate and store a new /admin password in Secrets Manager"
-}
-
-variable "alb_deletion_protection" {
-  type    = bool
-  default = false
-
-  description = "Protect the load balancer from deletion. Leave false for easy teardown of this demo."
 }

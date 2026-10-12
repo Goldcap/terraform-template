@@ -79,29 +79,94 @@ data "aws_iam_policy_document" "bastion" {
   }
 }
 
-module "web" {
-  source = "../../modules/web"
+# --- Web platforms -------------------------------------------------------------
+# Each platform serves the same Hello World site. Any combination can be
+# enabled; the load balancer splits traffic between them by weight.
+
+module "web_asg" {
+  source = "../../modules/web-asg"
+  count  = var.enable_ec2 ? 1 : 0
 
   name                      = local.name
   vpc_id                    = module.network.vpc_id
-  public_subnet_ids         = module.network.public_subnet_ids
   private_subnet_ids        = module.network.private_subnet_ids
+  alb_security_group_id     = module.alb.security_group_id
   bastion_security_group_id = module.bastion.security_group_id
   key_name                  = aws_key_pair.this.key_name
+  admin_secret_arn          = local.admin_secret_arn
   instance_type             = var.instance_type
   min_size                  = var.web_min_size
   max_size                  = var.web_max_size
   cpu_target_utilization    = var.cpu_target_utilization
 }
 
+module "web_ecs" {
+  source = "../../modules/web-ecs"
+  count  = var.enable_ecs ? 1 : 0
+
+  name                      = local.name
+  vpc_id                    = module.network.vpc_id
+  private_subnet_ids        = module.network.private_subnet_ids
+  alb_security_group_id     = module.alb.security_group_id
+  bastion_security_group_id = module.bastion.security_group_id
+  key_name                  = aws_key_pair.this.key_name
+  admin_secret_arn          = local.admin_secret_arn
+  instance_type             = var.instance_type
+  min_size                  = var.web_min_size
+  max_size                  = var.web_max_size
+  cpu_target_utilization    = var.cpu_target_utilization
+}
+
+locals {
+  # Enabled platforms and what the load balancer and monitoring need from each.
+  platforms = merge(
+    var.enable_ec2 ? {
+      ec2 = {
+        target_group_arn        = module.web_asg[0].target_group_arn
+        target_group_arn_suffix = module.web_asg[0].target_group_arn_suffix
+      }
+    } : {},
+    var.enable_ecs ? {
+      ecs = {
+        target_group_arn        = module.web_ecs[0].target_group_arn
+        target_group_arn_suffix = module.web_ecs[0].target_group_arn_suffix
+      }
+    } : {}
+  )
+}
+
+module "alb" {
+  source = "../../modules/alb"
+
+  name              = local.name
+  vpc_id            = module.network.vpc_id
+  public_subnet_ids = module.network.public_subnet_ids
+
+  targets = {
+    for platform, config in local.platforms : platform => {
+      target_group_arn = config.target_group_arn
+      weight           = lookup(var.platform_weights, platform, 1)
+    }
+  }
+}
+
 module "monitoring" {
   source = "../../modules/monitoring"
 
-  name                    = local.name
-  autoscaling_group_name  = module.web.autoscaling_group_name
-  alb_arn_suffix          = module.web.alb_arn_suffix
-  target_group_arn_suffix = module.web.target_group_arn_suffix
-  alarm_email             = var.alarm_email
-  cpu_alarm_threshold     = var.cpu_alarm_threshold
-  monthly_budget_usd      = var.monthly_budget_usd
+  name           = local.name
+  alb_arn_suffix = module.alb.arn_suffix
+  alarm_email    = var.alarm_email
+
+  autoscaling_groups = var.enable_ec2 ? {
+    ec2 = { name = module.web_asg[0].autoscaling_group_name, has_memory_metrics = true }
+  } : {}
+
+  ecs_services = var.enable_ecs ? {
+    ecs = { cluster_name = module.web_ecs[0].cluster_name, service_name = module.web_ecs[0].service_name }
+  } : {}
+
+  target_groups = { for platform, config in local.platforms : platform => config.target_group_arn_suffix }
+
+  cpu_alarm_threshold = var.cpu_alarm_threshold
+  monthly_budget_usd  = var.monthly_budget_usd
 }

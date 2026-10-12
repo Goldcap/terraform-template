@@ -1,26 +1,7 @@
-# Load balancer: HTTP in from the allowed CIDRs, HTTP out to the web servers only.
-resource "aws_security_group" "alb" {
-  name        = "${var.name}-alb"
-  description = "Application Load Balancer: HTTP from clients, HTTP to web servers"
-  vpc_id      = var.vpc_id
-
-  tags = { Name = "${var.name}-alb" }
-}
-
-resource "aws_vpc_security_group_ingress_rule" "alb_http" {
-  for_each = toset(var.alb_ingress_cidrs)
-
-  security_group_id = aws_security_group.alb.id
-  description       = "HTTP from clients"
-
-  cidr_ipv4   = each.value
-  ip_protocol = "tcp"
-  from_port   = 80
-  to_port     = 80
-}
-
+# The load balancer (modules/alb) reaches the web servers through this rule,
+# which lives here so the load balancer can only reach targets that exist.
 resource "aws_vpc_security_group_egress_rule" "alb_to_web" {
-  security_group_id = aws_security_group.alb.id
+  security_group_id = var.alb_security_group_id
   description       = "HTTP to web servers"
 
   referenced_security_group_id = aws_security_group.web.id
@@ -43,7 +24,7 @@ resource "aws_vpc_security_group_ingress_rule" "web_http_from_alb" {
   security_group_id = aws_security_group.web.id
   description       = "HTTP from the load balancer"
 
-  referenced_security_group_id = aws_security_group.alb.id
+  referenced_security_group_id = var.alb_security_group_id
   ip_protocol                  = "tcp"
   from_port                    = 80
   to_port                      = 80

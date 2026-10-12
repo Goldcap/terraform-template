@@ -79,3 +79,51 @@ run "rejects_invalid_ssh_public_key" {
 
   expect_failures = [var.ssh_public_key]
 }
+
+run "serves_from_ec2_and_ecs_by_default" {
+  command = plan
+
+  assert {
+    condition     = length(module.web_asg) == 1 && length(module.web_ecs) == 1
+    error_message = "Both the EC2 and ECS platforms should be enabled by default."
+  }
+
+  assert {
+    condition     = toset(keys(local.platforms)) == toset(["ec2", "ecs"])
+    error_message = "The load balancer should forward to both platforms."
+  }
+}
+
+run "platforms_can_be_toggled_independently" {
+  command = plan
+
+  variables {
+    enable_ec2 = false
+  }
+
+  assert {
+    condition     = length(module.web_asg) == 0 && length(module.web_ecs) == 1 && toset(keys(local.platforms)) == toset(["ecs"])
+    error_message = "Disabling EC2 should leave only the ECS platform behind the load balancer."
+  }
+}
+
+run "rejects_disabling_every_platform" {
+  command = plan
+
+  variables {
+    enable_ec2 = false
+    enable_ecs = false
+  }
+
+  expect_failures = [var.enable_ecs]
+}
+
+run "rejects_weights_for_unknown_platforms" {
+  command = plan
+
+  variables {
+    platform_weights = { lambda = 1 }
+  }
+
+  expect_failures = [var.platform_weights]
+}

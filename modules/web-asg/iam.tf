@@ -38,7 +38,7 @@ data "aws_iam_policy_document" "web" {
     sid       = "ReadAdminCredentials"
     effect    = "Allow"
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = [aws_secretsmanager_secret.admin.arn]
+    resources = [var.admin_secret_arn]
   }
 }
 

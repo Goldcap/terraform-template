@@ -4,22 +4,41 @@ variable "name" {
   description = "Name prefix for monitoring resources"
 }
 
-variable "autoscaling_group_name" {
-  type = string
-
-  description = "Name of the web server Auto Scaling Group to monitor"
-}
-
 variable "alb_arn_suffix" {
   type = string
 
   description = "ARN suffix of the Application Load Balancer"
 }
 
-variable "target_group_arn_suffix" {
-  type = string
+variable "autoscaling_groups" {
+  type = map(object({
+    name               = string
+    has_memory_metrics = optional(bool, false)
+  }))
+  default = {}
 
-  description = "ARN suffix of the web server target group"
+  description = <<-EOT
+    EC2-based web tiers to monitor, keyed by platform name. CPU comes from the
+    AWS/EC2 metrics of the group; memory from the CloudWatch agent when
+    has_memory_metrics is true.
+  EOT
+}
+
+variable "ecs_services" {
+  type = map(object({
+    cluster_name = string
+    service_name = string
+  }))
+  default = {}
+
+  description = "ECS services to monitor, keyed by platform name. CPU and memory come from the free AWS/ECS service metrics."
+}
+
+variable "target_groups" {
+  type    = map(string)
+  default = {}
+
+  description = "Load balancer target group ARN suffixes, keyed by platform name. Each gets a \"no healthy hosts\" alarm."
 }
 
 variable "alarm_email" {

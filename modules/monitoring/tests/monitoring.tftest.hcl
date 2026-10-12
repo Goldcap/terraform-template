@@ -30,24 +30,41 @@ mock_provider "aws" {
 }
 
 variables {
-  name                    = "test"
-  autoscaling_group_name  = "test-web"
-  alb_arn_suffix          = "app/test-alb/0123456789abcdef"
-  target_group_arn_suffix = "targetgroup/test-web/0123456789abcdef"
-  alarm_email             = "test@example.com"
+  name           = "test"
+  alb_arn_suffix = "app/test-alb/0123456789abcdef"
+  alarm_email    = "test@example.com"
+
+  autoscaling_groups = {
+    ec2 = { name = "test-web", has_memory_metrics = true }
+  }
+  ecs_services = {
+    ecs = { cluster_name = "test-ecs", service_name = "test-nginx" }
+  }
+  target_groups = {
+    ec2 = "targetgroup/test-web/0123456789abcdef"
+    ecs = "targetgroup/test-ecs/0123456789abcdef"
+  }
 }
 
-run "cpu_alarm_notifies_sns_above_70_percent" {
+run "every_platform_has_a_cpu_alarm_above_70_percent" {
   command = plan
 
   assert {
-    condition     = aws_cloudwatch_metric_alarm.cpu_high.threshold == 70 && aws_cloudwatch_metric_alarm.cpu_high.comparison_operator == "GreaterThanThreshold"
-    error_message = "The CPU alarm must trigger above 70%."
+    condition = alltrue([
+      for alarm in aws_cloudwatch_metric_alarm.cpu_high :
+      alarm.threshold == 70 && alarm.comparison_operator == "GreaterThanThreshold" && alarm.metric_name == "CPUUtilization"
+    ]) && keys(aws_cloudwatch_metric_alarm.cpu_high) == ["ec2", "ecs"]
+    error_message = "Every platform must have a CPU alarm that triggers above 70%."
   }
 
   assert {
-    condition     = aws_cloudwatch_metric_alarm.cpu_high.metric_name == "CPUUtilization" && aws_cloudwatch_metric_alarm.cpu_high.dimensions["AutoScalingGroupName"] == "test-web"
-    error_message = "The CPU alarm must watch the Auto Scaling Group's CPUUtilization."
+    condition     = aws_cloudwatch_metric_alarm.cpu_high["ec2"].namespace == "AWS/EC2" && aws_cloudwatch_metric_alarm.cpu_high["ec2"].dimensions["AutoScalingGroupName"] == "test-web"
+    error_message = "The EC2 CPU alarm must watch the Auto Scaling Group's CPUUtilization."
+  }
+
+  assert {
+    condition     = aws_cloudwatch_metric_alarm.cpu_high["ecs"].namespace == "AWS/ECS" && aws_cloudwatch_metric_alarm.cpu_high["ecs"].dimensions["ServiceName"] == "test-nginx"
+    error_message = "The ECS CPU alarm must watch the service's CPUUtilization."
   }
 
   assert {
@@ -56,12 +73,26 @@ run "cpu_alarm_notifies_sns_above_70_percent" {
   }
 }
 
-run "memory_is_monitored" {
+run "memory_is_monitored_for_every_platform" {
   command = plan
 
   assert {
-    condition     = aws_cloudwatch_metric_alarm.memory_high.metric_name == "mem_used_percent" && aws_cloudwatch_metric_alarm.memory_high.namespace == "CWAgent"
-    error_message = "Memory must be monitored via the CloudWatch agent metric."
+    condition     = aws_cloudwatch_metric_alarm.memory_high["ec2"].metric_name == "mem_used_percent" && aws_cloudwatch_metric_alarm.memory_high["ec2"].namespace == "CWAgent"
+    error_message = "EC2 memory must be monitored via the CloudWatch agent metric."
+  }
+
+  assert {
+    condition     = aws_cloudwatch_metric_alarm.memory_high["ecs"].metric_name == "MemoryUtilization" && aws_cloudwatch_metric_alarm.memory_high["ecs"].namespace == "AWS/ECS"
+    error_message = "ECS memory must be monitored via the service metric."
+  }
+}
+
+run "every_target_group_has_a_health_alarm" {
+  command = plan
+
+  assert {
+    condition     = keys(aws_cloudwatch_metric_alarm.no_healthy_hosts) == ["ec2", "ecs"]
+    error_message = "Every platform's target group must have a no-healthy-hosts alarm."
   }
 }
 

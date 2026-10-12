@@ -1,14 +1,54 @@
-# EC2 basic monitoring publishes every 5 minutes, so two periods means the
-# condition held for ~10 minutes - long enough to ignore brief spikes.
-resource "aws_cloudwatch_metric_alarm" "cpu_high" {
-  alarm_name        = "${var.name}-web-cpu-high"
-  alarm_description = "Average CPU across ${var.autoscaling_group_name} is above ${var.cpu_alarm_threshold}%."
+locals {
+  # Every CPU source behind the load balancer, keyed by platform name.
+  cpu_sources = merge(
+    {
+      for key, asg in var.autoscaling_groups : key => {
+        namespace   = "AWS/EC2"
+        description = "Auto Scaling Group ${asg.name}"
+        dimensions  = { AutoScalingGroupName = asg.name }
+      }
+    },
+    {
+      for key, svc in var.ecs_services : key => {
+        namespace   = "AWS/ECS"
+        description = "ECS service ${svc.service_name}"
+        dimensions  = { ClusterName = svc.cluster_name, ServiceName = svc.service_name }
+      }
+    }
+  )
 
-  namespace   = "AWS/EC2"
+  memory_sources = merge(
+    {
+      for key, asg in var.autoscaling_groups : key => {
+        namespace   = var.metrics_namespace
+        metric_name = "mem_used_percent"
+        description = "Auto Scaling Group ${asg.name}"
+        dimensions  = { AutoScalingGroupName = asg.name }
+      } if asg.has_memory_metrics
+    },
+    {
+      for key, svc in var.ecs_services : key => {
+        namespace   = "AWS/ECS"
+        metric_name = "MemoryUtilization"
+        description = "ECS service ${svc.service_name}"
+        dimensions  = { ClusterName = svc.cluster_name, ServiceName = svc.service_name }
+      }
+    }
+  )
+}
+
+# The basic metrics publish every 5 minutes (EC2) or every minute (ECS); two
+# 5-minute periods means the condition held for ~10 minutes, long enough to
+# ignore brief spikes.
+resource "aws_cloudwatch_metric_alarm" "cpu_high" {
+  for_each = local.cpu_sources
+
+  alarm_name        = "${var.name}-${each.key}-cpu-high"
+  alarm_description = "Average CPU of ${each.value.description} is above ${var.cpu_alarm_threshold}%."
+
+  namespace   = each.value.namespace
   metric_name = "CPUUtilization"
-  dimensions = {
-    AutoScalingGroupName = var.autoscaling_group_name
-  }
+  dimensions  = each.value.dimensions
 
   statistic           = "Average"
   period              = 300
@@ -22,14 +62,14 @@ resource "aws_cloudwatch_metric_alarm" "cpu_high" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "memory_high" {
-  alarm_name        = "${var.name}-web-memory-high"
-  alarm_description = "Average memory across ${var.autoscaling_group_name} is above ${var.memory_alarm_threshold}%."
+  for_each = local.memory_sources
 
-  namespace   = var.metrics_namespace
-  metric_name = "mem_used_percent"
-  dimensions = {
-    AutoScalingGroupName = var.autoscaling_group_name
-  }
+  alarm_name        = "${var.name}-${each.key}-memory-high"
+  alarm_description = "Average memory of ${each.value.description} is above ${var.memory_alarm_threshold}%."
+
+  namespace   = each.value.namespace
+  metric_name = each.value.metric_name
+  dimensions  = each.value.dimensions
 
   statistic           = "Average"
   period              = 300
@@ -42,16 +82,18 @@ resource "aws_cloudwatch_metric_alarm" "memory_high" {
   ok_actions    = [aws_sns_topic.alerts.arn]
 }
 
-# Fires when the load balancer has nothing healthy to send traffic to.
+# Fires when a platform has nothing healthy behind the load balancer.
 resource "aws_cloudwatch_metric_alarm" "no_healthy_hosts" {
-  alarm_name        = "${var.name}-web-no-healthy-hosts"
-  alarm_description = "The load balancer has no healthy web servers - the site is down."
+  for_each = var.target_groups
+
+  alarm_name        = "${var.name}-${each.key}-no-healthy-hosts"
+  alarm_description = "The load balancer has no healthy ${each.key} targets."
 
   namespace   = "AWS/ApplicationELB"
   metric_name = "HealthyHostCount"
   dimensions = {
     LoadBalancer = var.alb_arn_suffix
-    TargetGroup  = var.target_group_arn_suffix
+    TargetGroup  = each.value
   }
 
   statistic           = "Minimum"
