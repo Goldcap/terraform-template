@@ -46,7 +46,7 @@ jobs:
 
       - name: terraform validate
         run: |
-          for dir in bootstrap environments/dev modules/*/; do
+          for dir in environments/*/ modules/*/; do
             echo "::group::validate ${dir}"
             terraform -chdir="${dir}" init -backend=false
             terraform -chdir="${dir}" validate

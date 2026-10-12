@@ -84,10 +84,11 @@ flowchart LR
 
 ```
 .
-├── bootstrap/               # One-time: S3 state bucket + GitHub OIDC roles for CI (local state)
 ├── environments/
+│   ├── bootstrap/           # One-time root: S3 state bucket + GitHub OIDC CI roles (local state)
 │   └── dev/                 # Root module: wires the modules together, remote state
 ├── modules/
+│   ├── bootstrap/           # State bucket, GitHub OIDC provider, plan/apply roles
 │   ├── network/             # VPC, subnets, NAT instance/gateway, S3 endpoint
 │   ├── bastion/             # Bastion host, its security group and IAM role
 │   ├── web/                 # ALB, launch template, ASG, scaling, cloud-init, secret
@@ -98,8 +99,10 @@ flowchart LR
 └── .tflint.hcl              # TFLint rules (Terraform recommended + AWS ruleset)
 ```
 
-Adding another environment (for example `staging` or `prod`) means copying
-`environments/dev`, changing the backend `key`, and adjusting variables. The
+Every directory under `environments/` is a root module (it has the provider,
+backend and variable values). Everything under `modules/` is reusable and
+provider-agnostic. Adding another environment (for example `staging` or `prod`)
+means copying `environments/dev`, changing the backend `key`, and adjusting variables. The
 modules are shared.
 
 ## Prerequisites and assumptions
@@ -124,7 +127,7 @@ Creates the encrypted, versioned S3 state bucket and the GitHub Actions OIDC
 roles.
 
 ```bash
-cd bootstrap
+cd environments/bootstrap
 cp terraform.tfvars.example terraform.tfvars   # set github_repository = "owner/repo"
 terraform init
 terraform apply
@@ -202,7 +205,7 @@ providers current. Until the repository variables below are set, only
    With the GitHub CLI:
 
    ```bash
-   cd bootstrap
+   cd environments/bootstrap
    gh variable set AWS_REGION         --body us-east-1
    gh variable set TF_STATE_BUCKET    --body "$(terraform output -raw state_bucket)"
    gh variable set AWS_PLAN_ROLE_ARN  --body "$(terraform output -raw github_plan_role_arn)"
@@ -391,14 +394,14 @@ aws secretsmanager delete-secret --secret-id <admin_secret_arn> --force-delete-w
 # 2. Optional: the bootstrap stack (state bucket, OIDC provider, CI roles).
 #    The state bucket costs pennies; it's protected by prevent_destroy and
 #    versioning, so empty it and lift the protection first.
-cd bootstrap
+cd environments/bootstrap
 BUCKET=$(terraform output -raw state_bucket)
 aws s3api delete-objects --bucket "$BUCKET" \
   --delete "$(aws s3api list-object-versions --bucket "$BUCKET" \
     --query '{Objects: [Versions, DeleteMarkers][][].{Key: Key, VersionId: VersionId}}' --output json)"
-sed -i.bak 's/prevent_destroy = true/prevent_destroy = false/' state.tf
+sed -i.bak 's/prevent_destroy = true/prevent_destroy = false/' ../../modules/bootstrap/state.tf
 terraform destroy
-mv state.tf.bak state.tf
+mv ../../modules/bootstrap/state.tf.bak ../../modules/bootstrap/state.tf
 ```
 
 Finally, check **Billing → Bills** a day later to confirm nothing is still

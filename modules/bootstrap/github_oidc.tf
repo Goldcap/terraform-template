@@ -91,7 +91,7 @@ data "aws_iam_policy_document" "terraform_state" {
     sid       = "ReadProjectSecrets"
     effect    = "Allow"
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = ["arn:aws:secretsmanager:${var.region}:${local.account_id}:secret:${var.project}-*"]
+    resources = ["arn:aws:secretsmanager:${local.region}:${local.account_id}:secret:${var.project}-*"]
   }
 }
 
@@ -110,7 +110,7 @@ data "aws_iam_policy_document" "terraform_apply" {
     condition {
       test     = "StringEquals"
       variable = "aws:RequestedRegion"
-      values   = [var.region]
+      values   = [local.region]
     }
   }
 
@@ -118,14 +118,14 @@ data "aws_iam_policy_document" "terraform_apply" {
     sid       = "ManageProjectTopics"
     effect    = "Allow"
     actions   = ["sns:*"]
-    resources = ["arn:aws:sns:${var.region}:${local.account_id}:${var.project}-*"]
+    resources = ["arn:aws:sns:${local.region}:${local.account_id}:${var.project}-*"]
   }
 
   statement {
     sid       = "ManageProjectSecrets"
     effect    = "Allow"
     actions   = ["secretsmanager:*"]
-    resources = ["arn:aws:secretsmanager:${var.region}:${local.account_id}:secret:${var.project}-*"]
+    resources = ["arn:aws:secretsmanager:${local.region}:${local.account_id}:secret:${var.project}-*"]
   }
 
   statement {

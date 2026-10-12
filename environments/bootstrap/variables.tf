@@ -3,11 +3,6 @@ variable "project" {
   default = "hello-world"
 
   description = "Project name, used as a prefix for every resource. Must match the project used by the environments."
-
-  validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{2,18}$", var.project))
-    error_message = "project must be 3-19 lowercase alphanumeric characters or hyphens, starting with a letter."
-  }
 }
 
 variable "region" {
@@ -21,11 +16,6 @@ variable "github_repository" {
   type = string
 
   description = "GitHub repository allowed to assume the CI roles, in 'owner/name' form"
-
-  validation {
-    condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))
-    error_message = "github_repository must be in 'owner/name' form."
-  }
 }
 
 variable "github_apply_environment" {

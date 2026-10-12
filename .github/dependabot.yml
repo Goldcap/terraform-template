@@ -7,8 +7,7 @@ updates:
 
   - package-ecosystem: terraform
     directories:
-      - /bootstrap
-      - /environments/dev
+      - /environments/*
       - /modules/*
     schedule:
       interval: weekly
