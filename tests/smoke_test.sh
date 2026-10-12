@@ -5,7 +5,7 @@
 #   tests/smoke_test.sh [terraform-dir]      # default: environments/dev
 #
 # Reads everything it needs from `terraform output` in the given directory and
-# checks every enabled web platform (EC2 Auto Scaling Group and/or ECS).
+# checks every enabled web platform (EC2 Auto Scaling Group, ECS and/or EKS).
 #
 # Requires: terraform, curl, jq, and the AWS CLI with read access to the account.
 
@@ -24,6 +24,8 @@ ADMIN_SECRET_ARN=$(output admin_secret_arn)
 ASG_NAME=$(output autoscaling_group_name)
 ECS_CLUSTER=$(output ecs_cluster_name)
 ECS_SERVICE=$(output ecs_service_name)
+EKS_CLUSTER=$(output eks_cluster_name)
+EKS_NODE_GROUP=$(output eks_node_group_name)
 PLATFORMS=$(jq -r '.enabled_platforms.value[]' <<<"$OUTPUTS")
 AWS_REGION="${AWS_REGION:-$(cut -d: -f4 <<<"$ADMIN_SECRET_ARN")}"
 export AWS_REGION
@@ -153,6 +155,19 @@ if [ -n "$ECS_SERVICE" ]; then
     --query 'containerInstances[].ec2InstanceId' --output text | xargs)
   check "ecs: container instances have no public IP addresses" no_public_ips "$ECS_INSTANCE_IDS"
   check "ecs: container instances are t2.micro" instance_types_are "$ECS_INSTANCE_IDS" "t2.micro"
+fi
+
+if [ -n "$EKS_CLUSTER" ]; then
+  check "eks: cluster is ACTIVE" test "$(aws eks describe-cluster --name "$EKS_CLUSTER" --query 'cluster.status' --output text)" = "ACTIVE"
+  NODE_GROUP_JSON=$(aws eks describe-nodegroup --cluster-name "$EKS_CLUSTER" --nodegroup-name "$EKS_NODE_GROUP" --query 'nodegroup')
+  check "eks: node group is ACTIVE" test "$(jq -r .status <<<"$NODE_GROUP_JSON")" = "ACTIVE"
+  check "eks: node group scales between 1 and 3 nodes" test "$(jq -r '"\(.scalingConfig.minSize)-\(.scalingConfig.maxSize)"' <<<"$NODE_GROUP_JSON")" = "1-3"
+  NODE_ASG=$(jq -r '.resources.autoScalingGroups[0].name' <<<"$NODE_GROUP_JSON")
+  NODE_IDS=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$NODE_ASG" --query 'AutoScalingGroups[0].Instances[].InstanceId' --output text | xargs)
+  check "eks: nodes have no public IP addresses" no_public_ips "$NODE_IDS"
+  check "eks: nodes are t3.small" instance_types_are "$NODE_IDS" "t3.small"
+  check "eks: nginx gets Secrets Manager access via Pod Identity" \
+    test "$(aws eks list-pod-identity-associations --cluster-name "$EKS_CLUSTER" --namespace hello-world --service-account nginx --query 'length(associations)' --output text)" = "1"
 fi
 
 for alarm in $(jq -r '.cpu_alarm_names.value[]' <<<"$OUTPUTS"); do
