@@ -110,3 +110,10 @@ variable "load_balancer_controller_chart_version" {
 
   description = "Version of the aws-load-balancer-controller Helm chart. Keep policies/aws_load_balancer_controller.json in step with it."
 }
+
+variable "egress_dependency" {
+  type    = string
+  default = null
+
+  description = "Pass the network module's egress_id. Ties this platform's teardown to the NAT path so it outlives the workloads that need it to drain."
+}

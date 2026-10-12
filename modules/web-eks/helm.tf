@@ -1,3 +1,9 @@
+# Ties destroy order to the private subnets' outbound path: the controller
+# deregisters pod IPs through the AWS API on uninstall, so it needs egress.
+resource "terraform_data" "egress" {
+  input = var.egress_dependency
+}
+
 locals {
   app_namespace       = "hello-world"
   app_service_account = "nginx"
@@ -28,6 +34,7 @@ resource "helm_release" "load_balancer_controller" {
   wait = true
 
   depends_on = [
+    terraform_data.egress,
     aws_eks_pod_identity_association.load_balancer_controller,
     aws_iam_role_policy.load_balancer_controller,
     aws_eks_addon.after_nodes,

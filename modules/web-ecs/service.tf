@@ -1,5 +1,11 @@
 data "aws_region" "current" {}
 
+# Ties destroy order to the private subnets' outbound path: anything that
+# depends on this is destroyed before the NAT route or gateway behind it.
+resource "terraform_data" "egress" {
+  input = var.egress_dependency
+}
+
 resource "aws_cloudwatch_log_group" "nginx" {
   name              = "/ecs/${var.name}/nginx"
   retention_in_days = var.log_retention_days
@@ -91,14 +97,15 @@ resource "aws_ecs_service" "nginx" {
   # runs against a working deployment.
   wait_for_steady_state = true
 
-  # Destroy order matters: the ECS agent needs its IAM policy and HTTPS
-  # egress until the service has fully drained, or it disconnects and the
-  # service is stuck in DRAINING (the delete times out after 20 minutes).
+  # Destroy order matters: the ECS agent needs its IAM policy, HTTPS egress
+  # and the NAT path until the service has fully drained, or it disconnects
+  # and the service is stuck in DRAINING (the delete times out after 20m).
   depends_on = [
     aws_ecs_cluster_capacity_providers.this,
     aws_iam_role_policy_attachment.instances_ecs_agent,
     aws_iam_role_policy.task_execution,
     aws_vpc_security_group_egress_rule.https,
+    terraform_data.egress,
   ]
 
   lifecycle {

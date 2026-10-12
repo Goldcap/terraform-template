@@ -112,3 +112,10 @@ variable "log_retention_days" {
 
   description = "How long to keep container logs in CloudWatch Logs"
 }
+
+variable "egress_dependency" {
+  type    = string
+  default = null
+
+  description = "Pass the network module's egress_id. Ties this platform's teardown to the NAT path so it outlives the workloads that need it to drain."
+}

@@ -119,6 +119,9 @@ module "web_ecs" {
   min_size                  = var.web_min_size
   max_size                  = var.web_max_size
   cpu_target_utilization    = var.cpu_target_utilization
+
+  # Keep the NAT path until the service has drained (see modules/web-ecs).
+  egress_dependency = module.network.egress_id
 }
 
 data "aws_caller_identity" "current" {}
@@ -142,6 +145,7 @@ module "web_eks" {
   private_subnet_ids    = module.network.private_subnet_ids
   alb_security_group_id = module.alb.security_group_id
   admin_secret_arn      = local.admin_secret_arn
+  egress_dependency     = module.network.egress_id
   node_min_size         = var.web_min_size
   node_max_size         = var.web_max_size
 
