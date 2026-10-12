@@ -1,4 +1,4 @@
-# Terraform AWS Hello World: Bastion, ALB, EC2/ECS Auto Scaling and Monitoring
+# Terraform AWS Hello World: Bastion, ALB, EC2/ECS/EKS Auto Scaling and Monitoring
 
 A small but production-shaped AWS environment, built with Terraform to show
 infrastructure-as-code best practice: a custom VPC, a bastion host, a
@@ -7,9 +7,10 @@ auto scaling, CloudWatch monitoring with SNS alerts, a GitHub Actions pipeline
 with a manually approved apply, and automated tests. It is designed to fit
 within (or very close to) the AWS Free Tier.
 
-The web tier can run on **plain EC2 (an Auto Scaling Group)**, on **ECS**, or
-on both at once. Each platform is an independent toggle, and the load balancer
-splits traffic between whichever are enabled (see [Web platforms](#web-platforms)).
+The web tier can run on **plain EC2 (an Auto Scaling Group)**, on **ECS**, on
+**EKS**, or any combination. Each platform is an independent toggle, and the
+load balancer splits traffic between whichever are enabled (see
+[Web platforms](#web-platforms)).
 
 - [Architecture](#architecture)
 - [How each requirement is met](#how-each-requirement-is-met)
@@ -40,17 +41,19 @@ flowchart LR
         subgraph private[Private subnets - 2 AZs]
             asg[EC2 platform: Auto Scaling Group<br/>1-3 x t2.micro, nginx + CloudWatch agent]
             ecs[ECS platform: nginx service, 1-3 tasks<br/>on a 1-3 x t2.micro capacity provider]
+            eks[EKS platform - optional: nginx pods, 1-3 via HPA<br/>on a 1-3 x t3.small managed node group]
         end
     end
 
     alb -- "HTTP :80 (weighted)" --> asg
     alb -- "HTTP, dynamic ports (weighted)" --> ecs
+    alb -- "HTTP :80 to pod IPs (weighted)" --> eks
     bastion -- SSH :22 / HTTP :80 --> asg
-    asg & ecs -- HTTPS :443 --> nat --> internet([Internet / AWS APIs])
+    asg & ecs & eks -- HTTPS :443 --> nat --> internet([Internet / AWS APIs])
 
-    asg & ecs -. metrics .-> cw[CloudWatch<br/>alarms + dashboard]
+    asg & ecs & eks -. metrics .-> cw[CloudWatch<br/>alarms + dashboard]
     cw -. CPU above 70% .-> sns[SNS topic] -. email .-> inbox([You])
-    asg & ecs -. admin credentials .-> sm[Secrets Manager]
+    asg & ecs & eks -. admin credentials .-> sm[Secrets Manager]
 ```
 
 | Component | Where | Purpose |
@@ -61,7 +64,8 @@ flowchart LR
 | Application Load Balancer | Public subnets | Public entry point; forwards to every enabled platform by weight and health-checks `/health` |
 | EC2 platform (`enable_ec2`) | Private subnets, t2.micro, min 1 / max 3 | nginx on an Auto Scaling Group; scales on average CPU (target 50%) |
 | ECS platform (`enable_ecs`) | Private subnets, t2.micro container instances | nginx task definition and service (1-3 tasks, scaling on CPU) on an ECS cluster whose EC2 capacity provider grows the instances to fit |
-| Secrets Manager secret | n/a | Basic-auth credentials for the `/admin/` page, shared by both platforms |
+| EKS platform (`enable_eks`, off by default) | Private subnets, t3.small nodes | nginx Deployment (1-3 pods via HPA) from a Helm chart; the AWS Load Balancer Controller registers pod IPs in the ALB target group |
+| Secrets Manager secret | n/a | Basic-auth credentials for the `/admin/` page, shared by every platform |
 | CloudWatch | n/a | CPU and memory metrics, alarms, dashboard |
 | SNS topic | n/a | Emails you when an alarm fires (CPU above 70%, memory, no healthy hosts) |
 | AWS Budget | n/a | Emails you at 80% of actual or 100% of forecast monthly spend |
@@ -75,18 +79,18 @@ flowchart LR
 | Web server on EC2 in the private subnet | [`modules/web-asg/asg.tf`](modules/web-asg/asg.tf): launch template plus ASG in the private subnets, no public IPs |
 | HTTP (80) to the web server from the bastion only | [`modules/web-asg/security_groups.tf`](modules/web-asg/security_groups.tf): web SG allows port 80 only from the bastion SG **and the ALB SG** (the ALB has to reach the targets; see [Security notes](#security-notes)) |
 | SSH to the bastion from your IP | `ssh_allowed_cidrs` in [`environments/dev`](environments/dev/variables.tf): validation only accepts specific single-host `/32` IPs |
-| Least-privilege IAM roles for instances | Web: publish metrics only to the `CWAgent` namespace, `ec2:DescribeTags`, and read **its own** secret ([`modules/web-asg/iam.tf`](modules/web-asg/iam.tf)). ECS: task execution role can only write its log group and read the admin secret; the nginx container gets **no** task role ([`modules/web-ecs/iam.tf`](modules/web-ecs/iam.tf)). Bastion: `ec2:DescribeInstances` only ([`environments/dev/main.tf`](environments/dev/main.tf)). NAT: no role at all ([`modules/ec2`](modules/ec2) only creates a role when given a policy) |
+| Least-privilege IAM roles for instances | Web: publish metrics only to the `CWAgent` namespace, `ec2:DescribeTags`, and read **its own** secret ([`modules/web-asg/iam.tf`](modules/web-asg/iam.tf)). ECS: task execution role can only write its log group and read the admin secret; the nginx container gets **no** task role ([`modules/web-ecs/iam.tf`](modules/web-ecs/iam.tf)). EKS: per-service-account roles via Pod Identity; nginx's can only read the admin secret ([`modules/web-eks/pod_identity.tf`](modules/web-eks/pod_identity.tf)). Bastion: `ec2:DescribeInstances` only ([`environments/dev/main.tf`](environments/dev/main.tf)). NAT: no role at all ([`modules/ec2`](modules/ec2) only creates a role when given a policy) |
 | "Hello, World!" web application | nginx page that also shows which platform, instance or task, and AZ served it |
 | Automated deployment (cloud-init) | EC2: [`modules/web-asg/templates/user_data.sh.tftpl`](modules/web-asg/templates/user_data.sh.tftpl). ECS: [`modules/web-ecs/templates/start_nginx.sh.tftpl`](modules/web-ecs/templates/start_nginx.sh.tftpl) |
 | ALB in front of the web server | [`modules/alb`](modules/alb): shared ALB with weighted forwarding to each enabled platform |
-| ASG min 1 / max 3, triggered by CPU | [`modules/web-asg/asg.tf`](modules/web-asg/asg.tf): target-tracking policy on `ASGAverageCPUUtilization`. ECS: 1-3 tasks on `ECSServiceAverageCPUUtilization`, 1-3 instances via the capacity provider |
-| CloudWatch CPU and memory monitoring | EC2: CPU from `AWS/EC2`, memory (`mem_used_percent`) from the CloudWatch agent. ECS: CPU and memory from the free `AWS/ECS` service metrics. [Dashboard](modules/monitoring/dashboard.tf) shows both |
+| ASG min 1 / max 3, triggered by CPU | [`modules/web-asg/asg.tf`](modules/web-asg/asg.tf): target-tracking policy on `ASGAverageCPUUtilization`. ECS: 1-3 tasks on `ECSServiceAverageCPUUtilization`, 1-3 instances via the capacity provider. EKS: HorizontalPodAutoscaler, 1-3 pods at 50% CPU |
+| CloudWatch CPU and memory monitoring | EC2: CPU from `AWS/EC2`, memory (`mem_used_percent`) from the CloudWatch agent. ECS: CPU and memory from the free `AWS/ECS` service metrics. EKS: node CPU from `AWS/EC2` (pod metrics would need billed Container Insights). The [dashboard](modules/monitoring/dashboard.tf) shows every platform |
 | Alarm when CPU is above 70%, notified via SNS | [`modules/monitoring/alarms.tf`](modules/monitoring/alarms.tf): one CPU alarm per platform, plus [`sns.tf`](modules/monitoring/sns.tf) (email subscription) |
 | Free tier and cost documentation | [Cost optimisation](#cost-optimisation) |
 | CI: `fmt`, `validate`, plan, apply with manual approval, test via ALB | [`.github/workflows/terraform.yml`](.github/workflows/terraform.yml) |
 | **Bonus:** infrastructure testing | `terraform test` unit tests in `modules/*/tests` and `environments/dev/tests`, plus the AWS CLI/curl [`tests/smoke_test.sh`](tests/smoke_test.sh) |
-| **Bonus:** Secrets Manager | `/admin/` credentials generated by Terraform as an ephemeral value and written write-only, so they're never in state ([`environments/dev/secrets.tf`](environments/dev/secrets.tf)). EC2 instances read them at boot; the ECS task definition injects them with `secrets` / `valueFrom` |
-| **Bonus:** containerisation | nginx on Amazon ECS: cluster, EC2 capacity provider, task definition, service and target group ([`modules/web-ecs`](modules/web-ecs)) |
+| **Bonus:** Secrets Manager | `/admin/` credentials generated by Terraform as an ephemeral value and written write-only, so they're never in state ([`environments/dev/secrets.tf`](environments/dev/secrets.tf)). EC2 instances read them at boot; the ECS task definition injects them with `secrets` / `valueFrom`; on EKS the Secrets Store CSI Driver mounts them into an init container |
+| **Bonus:** containerisation | nginx on Amazon ECS ([`modules/web-ecs`](modules/web-ecs)) and on Amazon EKS ([`modules/web-eks`](modules/web-eks)) |
 
 ## Web platforms
 
@@ -99,7 +103,8 @@ enabled platform using weighted target groups:
 |---|---|---|
 | `enable_ec2` | `true` | nginx on an EC2 Auto Scaling Group ([`modules/web-asg`](modules/web-asg)) |
 | `enable_ecs` | `true` | nginx on ECS with an EC2 capacity provider ([`modules/web-ecs`](modules/web-ecs)) |
-| `platform_weights` | `{}` (equal) | Traffic split, e.g. `{ ec2 = 1, ecs = 3 }` |
+| `enable_eks` | `false` | nginx on EKS with a managed node group ([`modules/web-eks`](modules/web-eks)). Off by default because the control plane alone is ~$73/month |
+| `platform_weights` | `{}` (equal) | Traffic split, e.g. `{ ec2 = 1, ecs = 3, eks = 1 }` |
 
 At least one platform must be enabled. Running two side by side shows how you
 would migrate between them with no downtime: shift the weights, then switch
@@ -109,7 +114,7 @@ the old one off. Each response names the platform that served it:
 $ for i in $(seq 6); do curl -s "$URL" | grep -o 'Served by [A-Z0-9]* [a-z]*'; done
 Served by EC2 instance
 Served by ECS task
-Served by ECS task
+Served by EKS pod
 Served by EC2 instance
 ...
 ```
@@ -125,13 +130,70 @@ rate limits. The admin credentials are injected from Secrets Manager by ECS
 an htpasswd file and `exec`s nginx without it, so the plaintext isn't left in
 nginx's environment.
 
+**EKS details.** A managed node group of t3.small instances runs EKS 1.36 with
+AWS-managed add-ons: VPC CNI, kube-proxy, CoreDNS, the Pod Identity agent,
+metrics-server (for the HPA), and the Secrets Manager provider for the Secrets
+Store CSI Driver. The site is a small Helm chart
+([`modules/web-eks/chart`](modules/web-eks/chart)). The AWS Load Balancer
+Controller, installed with Helm and given its IAM role through Pod Identity,
+reads the chart's `TargetGroupBinding` and registers **pod IPs** directly in
+the Terraform-managed target group, so there's no NodePort hop. Each pod has
+two containers. An init container mounts the Secrets Manager secret through
+the CSI driver, using a Pod Identity role that can read only that secret, and
+writes the page and an htpasswd hash to an in-memory volume. The nginx
+container mounts only that volume, never the secret. It does share the pod's
+Pod Identity role, because EKS injects the role's token into every container
+in the pod, but that role can read only this one secret.
+Access to the cluster uses EKS access entries: the CI apply role is cluster
+admin, and the plan role is read-only.
+
+**Helm values per environment.** The chart's values are layered like
+`helm -f`, later layers winning:
+
+1. [`chart/values.yaml`](modules/web-eks/chart/values.yaml): chart defaults.
+2. [`environments/<env>/helm/hello-world.yaml`](environments/dev/helm/hello-world.yaml):
+   that environment's overrides (replicas, autoscaling, resources, image).
+3. Infrastructure wiring set by Terraform: target group, secret and service
+   account. Environment files can't override these.
+
+A `prod` environment would carry its own `helm/hello-world.yaml` (for example
+`minReplicas: 2`, bigger requests) with no chart changes.
+
+To try EKS:
+
+```bash
+terraform apply -var enable_eks=true      # ~15-20 minutes; or set it in terraform.tfvars
+aws eks update-kubeconfig --name "$(terraform output -raw eks_cluster_name)"
+kubectl -n hello-world get deploy,hpa,targetgroupbinding,pods
+```
+
+To turn it off again (stops the control plane charge), tear down in two steps:
+
+```bash
+# 1. Uninstall the Helm releases while the cluster is still reachable. This
+#    lets the controller deregister the pods and release its finalizers.
+terraform apply -destroy -var enable_eks=true \
+  -target='module.web_eks[0].helm_release.app' \
+  -target='module.web_eks[0].helm_release.load_balancer_controller'
+
+# 2. Remove the cluster, nodes and the rest (~15 minutes).
+terraform apply -var enable_eks=false
+```
+
+Step 1 matters because the Helm provider gets its connection from the cluster.
+In a single `enable_eks=false` apply it has no cluster to talk to, so Terraform
+forgets the releases instead of uninstalling them.
+
+Your IAM identity needs cluster access for `kubectl`. The cluster creator gets
+it automatically; add others with `eks_admin_principal_arns`.
+
 ## Repository layout
 
 ```
 .
 ├── environments/
 │   ├── bootstrap/           # One-time root: S3 state bucket + GitHub OIDC CI roles (local state)
-│   └── dev/                 # Root module: wires the modules together, remote state
+│   └── dev/                 # Root module: wires the modules together, remote state, helm/ value overrides
 ├── modules/
 │   ├── bootstrap/           # State bucket, GitHub OIDC provider, plan/apply roles
 │   ├── network/             # VPC, subnets, NAT instance/gateway, S3 endpoint
@@ -139,6 +201,7 @@ nginx's environment.
 │   ├── alb/                 # Shared ALB: security group, weighted HTTP listener
 │   ├── web-asg/             # EC2 platform: launch template, ASG, CPU scaling, cloud-init, target group
 │   ├── web-ecs/             # ECS platform: cluster, capacity provider, task definition, service, target group
+│   ├── web-eks/             # EKS platform: cluster, node group, add-ons, Pod Identity, LB controller, Helm chart
 │   └── monitoring/          # SNS, per-platform CloudWatch alarms, dashboard, AWS Budget
 │   (each module, and environments/dev, has tests/*.tftest.hcl unit tests)
 ├── tests/smoke_test.sh      # Post-deploy checks against the live environment
@@ -297,6 +360,9 @@ The smoke test waits up to 10 minutes for the app, then checks:
 - EC2: the ASG is min 1 / max 3 with a CPU target-tracking policy.
 - ECS: the service is active and scales 1-3 tasks on CPU, and its credentials
   come from Secrets Manager.
+- EKS (when enabled): the cluster and node group are active, the node group
+  scales 1-3 t3.small nodes with no public IPs, and nginx has a Pod Identity
+  association.
 - Web servers and container instances have no public IP and are t2.micro.
 - Each platform's CPU alarm threshold is 70%, and it notifies SNS.
 
@@ -377,6 +443,7 @@ switches.
 | **Only one custom metric**: memory, aggregated per ASG rather than per instance. ECS uses the free `AWS/ECS` metrics, and Container Insights stays off | 10 custom metrics are free; per-instance dimensions would grow with scaling, and Container Insights is billed per metric |
 | **ECS on an EC2 capacity provider (t2.micro), not Fargate**, with bridge networking so several tasks share an instance | Fargate isn't free-tier; an always-on 0.25 vCPU task is about $9/month |
 | **ECS image from ECR Public**, 7-day log retention | No private registry to pay for; container logs don't accumulate |
+| **EKS off by default**, and when on: t3.small nodes (the smallest practical size), managed add-ons, control plane logging off, no Container Insights | The control plane alone is ~$73/month and isn't free-tier. Turn it on to try it, then off again |
 | **1 dashboard, 1 budget**; 5 alarms with only EC2 enabled, 12 with EC2 and ECS (including AWS-managed target-tracking alarms) | 3 dashboards, 2 budgets and 10 alarms are free; alarms beyond that are $0.10/month each |
 | **8 GB gp3 volumes** for the bastion, NAT and EC2 web servers | Within the 30 GB free EBS allowance on their own. The ECS-optimized AMI needs 30 GB, so enabling ECS adds about $2.40/month of storage |
 | **S3 gateway endpoint** | Free, and keeps S3 traffic off the NAT |
@@ -399,6 +466,9 @@ switches.
   instead, so usage is drawn from your credits. Check which instance types are
   eligible in your account; `instance_type` is a variable if you need, say,
   `t3.micro`.
+- **EKS (`enable_eks = true`) is not free-tier:** about $73/month for the
+  control plane plus ~$15/month per t3.small node and its 20 GB volume. Enable
+  it to explore, then disable it.
 - **Paid line items regardless:**
   - Secrets Manager: $0.40/month per secret, after a 30-day trial.
   - Public IPv4: $0.005/hour each beyond the free allowance. The bastion, the
@@ -427,6 +497,15 @@ soon as you're done**.
   the execution role can only write its log group and read the admin secret.
   A deployment circuit breaker rolls back task definitions that never become
   healthy.
+- **EKS:** private nodes with IMDSv2 and a hop limit of 1, so pods can't use
+  the node role. Each workload gets its own Pod Identity role: the LB
+  controller uses the upstream least-privilege policy, and nginx can only read
+  the admin secret. Pods accept HTTP only from the ALB security group. Cluster
+  access is through IAM access entries only (no `aws-auth` ConfigMap). nginx
+  runs with all capabilities dropped except the four it needs, and without
+  privilege escalation. The API endpoint is public (authentication still
+  required) because GitHub-hosted runners have no fixed IPs; restrict it with
+  `endpoint_public_access_cidrs` when using self-hosted runners.
 - **Instances:** IMDSv2 required (blocks SSRF-style credential theft),
   encrypted root volumes, AMIs from AWS's public SSM parameter, and nginx
   `server_tokens off`. New AMIs roll out through ASG instance refresh
@@ -504,8 +583,15 @@ running.
   launched instances; replacing existing ones (drain, then terminate) is a
   manual or scheduled step. Fargate would remove instance management entirely,
   at a cost.
-- **The site is configured at start-up**, by cloud-init on EC2 and a
-  container entrypoint script on ECS. A production pipeline would bake it into
+- **The EKS cluster and its Kubernetes workloads share one state**, so the Helm
+  provider's connection depends on a resource in the same apply (hence the
+  two-step teardown above). For production, split them: a cluster stack, and an
+  apps stack or a GitOps controller (Argo CD, Flux) that deploys the chart.
+- **EKS nodes don't autoscale on their own.** The HPA scales pods 1-3, and three
+  nginx pods fit on one t3.small. Adding Karpenter or Cluster Autoscaler would
+  let the node group follow pod demand.
+- **The site is configured at start-up**, by cloud-init on EC2, a container
+  entrypoint script on ECS, and an init container on EKS. A production pipeline would bake it into
   a versioned image (an AMI, or a container image in ECR) and deploy by image
   tag.
 - **Observability:** ship nginx access logs to CloudWatch Logs, enable ALB
