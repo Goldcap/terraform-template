@@ -1,0 +1,28 @@
+# Chart defaults. Layered at deploy time (modules/web-eks/helm.tf):
+#   1. this file
+#   2. environments/<env>/helm/hello-world.yaml   per-environment overrides
+#   3. infrastructure wiring set by Terraform     (the keys marked below)
+
+image: public.ecr.aws/nginx/nginx:stable-alpine
+
+# --- Set by Terraform ---------------------------------------------------------
+serviceAccountName: nginx
+# Secrets Manager secret with {"username", "password"} for /admin/.
+adminSecretArn: ""
+# Terraform-managed ALB target group the pods are registered in.
+targetGroupArn: ""
+# ------------------------------------------------------------------------------
+
+healthCheckPath: /health
+
+autoscaling:
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 50
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    memory: 64Mi

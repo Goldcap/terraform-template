@@ -1,0 +1,17 @@
+# dev overrides for the hello-world chart (modules/web-eks/chart).
+# Layered over the chart's values.yaml; infrastructure wiring (target group,
+# secret, service account) is set by Terraform and can't be overridden here.
+# Another environment gets its own copy, e.g. environments/prod/helm/hello-world.yaml.
+
+# Same scaling contract as the EC2 and ECS platforms: 1-3 replicas on CPU.
+autoscaling:
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 50
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    memory: 64Mi

@@ -10,6 +10,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.7"
     }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 3.0"
+    }
   }
 
   # Partial configuration: bucket and region come from backend.hcl locally
@@ -32,6 +36,22 @@ provider "aws" {
       Project     = var.project
       Environment = var.environment
       ManagedBy   = "terraform"
+    }
+  }
+}
+
+# Talks to the EKS cluster when enable_eks = true; unused otherwise. Tokens
+# come from the AWS CLI, so it uses whatever AWS credentials Terraform runs
+# with (a local profile, or the CI role).
+provider "helm" {
+  kubernetes = {
+    host                   = try(module.web_eks[0].cluster_endpoint, null)
+    cluster_ca_certificate = try(base64decode(module.web_eks[0].cluster_certificate_authority), null)
+
+    exec = {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", "${local.name}-eks", "--region", var.region, "--output", "json"]
     }
   }
 }

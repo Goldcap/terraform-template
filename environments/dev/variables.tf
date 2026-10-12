@@ -91,11 +91,25 @@ variable "enable_ecs" {
   default = true
 
   description = "Serve the site from an nginx service on ECS with an EC2 capacity provider (modules/web-ecs)"
+}
+
+variable "enable_eks" {
+  type    = bool
+  default = false
+
+  description = "Serve the site from nginx pods on EKS (modules/web-eks). Off by default: the EKS control plane alone is ~$73/month."
 
   validation {
-    condition     = var.enable_ec2 || var.enable_ecs
-    error_message = "Enable at least one web platform (enable_ec2 or enable_ecs)."
+    condition     = var.enable_ec2 || var.enable_ecs || var.enable_eks
+    error_message = "Enable at least one web platform (enable_ec2, enable_ecs or enable_eks)."
   }
+}
+
+variable "eks_admin_principal_arns" {
+  type    = list(string)
+  default = []
+
+  description = "Extra IAM principals (e.g. your own role) to grant EKS cluster admin. The CI apply role and the cluster creator always get it."
 }
 
 variable "platform_weights" {
@@ -105,8 +119,8 @@ variable "platform_weights" {
   description = "Load balancer weight per enabled platform, e.g. { ec2 = 1, ecs = 3 }. Platforms not listed get weight 1."
 
   validation {
-    condition     = alltrue([for platform in keys(var.platform_weights) : contains(["ec2", "ecs"], platform)])
-    error_message = "platform_weights keys must be platform names: ec2 or ecs."
+    condition     = alltrue([for platform in keys(var.platform_weights) : contains(["ec2", "ecs", "eks"], platform)])
+    error_message = "platform_weights keys must be platform names: ec2, ecs or eks."
   }
 }
 

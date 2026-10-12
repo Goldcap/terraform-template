@@ -72,3 +72,13 @@ output "cpu_alarm_names" {
   value       = module.monitoring.cpu_alarm_names
   description = "High CPU CloudWatch alarms, one per enabled platform"
 }
+
+output "eks_cluster_name" {
+  value       = var.enable_eks ? module.web_eks[0].cluster_name : null
+  description = "Name of the EKS cluster (null when enable_eks = false). Use: aws eks update-kubeconfig --name <this>"
+}
+
+output "eks_node_group_name" {
+  value       = var.enable_eks ? module.web_eks[0].node_group_name : null
+  description = "Name of the EKS managed node group (null when enable_eks = false)"
+}

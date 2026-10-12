@@ -30,7 +30,34 @@ mock_provider "aws" {
       json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
     }
   }
+
+  mock_data "aws_caller_identity" {
+    defaults = {
+      account_id = "123456789012"
+      arn        = "arn:aws:sts::123456789012:assumed-role/developer/session"
+    }
+  }
+
+  mock_data "aws_iam_session_context" {
+    defaults = {
+      issuer_arn = "arn:aws:iam::123456789012:role/developer"
+    }
+  }
+
+  mock_data "aws_eks_addon_version" {
+    defaults = {
+      version = "v1.0.0-eksbuild.1"
+    }
+  }
+
+  mock_resource "aws_eks_cluster" {
+    defaults = {
+      vpc_config = [{ cluster_security_group_id = "sg-0eeeeeeeeeeeeeeee" }]
+    }
+  }
 }
+
+mock_provider "helm" {}
 
 variables {
   ssh_allowed_cidrs = ["203.0.113.10/32"]
@@ -89,6 +116,11 @@ run "serves_from_ec2_and_ecs_by_default" {
   }
 
   assert {
+    condition     = length(module.web_eks) == 0
+    error_message = "EKS should be off by default because of its control plane cost."
+  }
+
+  assert {
     condition     = toset(keys(local.platforms)) == toset(["ec2", "ecs"])
     error_message = "The load balancer should forward to both platforms."
   }
@@ -107,6 +139,19 @@ run "platforms_can_be_toggled_independently" {
   }
 }
 
+run "eks_can_be_enabled_alongside_the_others" {
+  command = plan
+
+  variables {
+    enable_eks = true
+  }
+
+  assert {
+    condition     = length(module.web_eks) == 1
+    error_message = "enable_eks = true should add the EKS platform."
+  }
+}
+
 run "rejects_disabling_every_platform" {
   command = plan
 
@@ -115,7 +160,7 @@ run "rejects_disabling_every_platform" {
     enable_ecs = false
   }
 
-  expect_failures = [var.enable_ecs]
+  expect_failures = [var.enable_eks]
 }
 
 run "rejects_weights_for_unknown_platforms" {

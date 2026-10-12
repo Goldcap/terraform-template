@@ -1,0 +1,12 @@
+# The AWS Load Balancer Controller registers the pod IPs directly in the
+# Terraform-managed target group behind the shared ALB.
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: nginx
+spec:
+  serviceRef:
+    name: nginx
+    port: 80
+  targetGroupARN: {{ .Values.targetGroupArn | quote }}
+  targetType: ip

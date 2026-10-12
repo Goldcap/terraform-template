@@ -117,6 +117,41 @@ module "web_ecs" {
   cpu_target_utilization    = var.cpu_target_utilization
 }
 
+data "aws_caller_identity" "current" {}
+
+data "aws_iam_session_context" "current" {
+  arn = data.aws_caller_identity.current.arn
+}
+
+locals {
+  # CI roles created by environments/bootstrap (same naming convention).
+  ci_apply_role_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project}-github-apply"
+  ci_plan_role_arn  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project}-github-plan"
+}
+
+module "web_eks" {
+  source = "../../modules/web-eks"
+  count  = var.enable_eks ? 1 : 0
+
+  name                  = local.name
+  vpc_id                = module.network.vpc_id
+  private_subnet_ids    = module.network.private_subnet_ids
+  alb_security_group_id = module.alb.security_group_id
+  admin_secret_arn      = local.admin_secret_arn
+  node_min_size         = var.web_min_size
+  node_max_size         = var.web_max_size
+
+  # Per-environment Helm overrides for the hello-world chart.
+  app_values = [file("${path.module}/helm/hello-world.yaml")]
+
+  # CI applies as cluster admin and plans with read-only access. Whoever
+  # creates the cluster gets admin too, unless that's the CI apply role,
+  # which already has an access entry.
+  cluster_admin_principal_arns    = distinct(concat([local.ci_apply_role_arn], var.eks_admin_principal_arns))
+  cluster_viewer_principal_arns   = [local.ci_plan_role_arn]
+  bootstrap_cluster_creator_admin = data.aws_iam_session_context.current.issuer_arn != local.ci_apply_role_arn
+}
+
 locals {
   # Enabled platforms and what the load balancer and monitoring need from each.
   platforms = merge(
@@ -130,6 +165,12 @@ locals {
       ecs = {
         target_group_arn        = module.web_ecs[0].target_group_arn
         target_group_arn_suffix = module.web_ecs[0].target_group_arn_suffix
+      }
+    } : {},
+    var.enable_eks ? {
+      eks = {
+        target_group_arn        = module.web_eks[0].target_group_arn
+        target_group_arn_suffix = module.web_eks[0].target_group_arn_suffix
       }
     } : {}
   )
@@ -157,9 +198,16 @@ module "monitoring" {
   alb_arn_suffix = module.alb.arn_suffix
   alarm_email    = var.alarm_email
 
-  autoscaling_groups = var.enable_ec2 ? {
-    ec2 = { name = module.web_asg[0].autoscaling_group_name, has_memory_metrics = true }
-  } : {}
+  # EKS CPU is watched on the node group; pod-level metrics would need
+  # Container Insights, which is billed.
+  autoscaling_groups = merge(
+    var.enable_ec2 ? {
+      ec2 = { name = module.web_asg[0].autoscaling_group_name, has_memory_metrics = true }
+    } : {},
+    var.enable_eks ? {
+      eks = { name = module.web_eks[0].node_autoscaling_group_name }
+    } : {}
+  )
 
   ecs_services = var.enable_ecs ? {
     ecs = { cluster_name = module.web_ecs[0].cluster_name, service_name = module.web_ecs[0].service_name }

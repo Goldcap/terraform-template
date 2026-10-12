@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx
+data:
+  default.conf: |
+    server {
+        listen      80;
+        server_name _;
+        server_tokens off;
+        root        /site/html;
+
+        location / {
+            index index.html;
+        }
+
+        location = {{ .Values.healthCheckPath }} {
+            access_log off;
+            default_type text/plain;
+            return 200 "ok";
+        }
+
+        location /admin/ {
+            auth_basic           "Restricted";
+            auth_basic_user_file /site/auth/htpasswd;
+        }
+    }
+
+  # Runs in the init container: the only container that sees the secret.
+  prepare-site.sh: |
+    set -eu
+    mkdir -p /site/html/admin /site/auth
+
+    cat > /site/html/index.html <<HTML
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <title>Hello, World!</title>
+    </head>
+    <body>
+      <h1>Hello, World!</h1>
+      <p>Served by EKS pod $POD_NAME on node $NODE_NAME</p>
+    </body>
+    </html>
+    HTML
+
+    cat > /site/html/admin/index.html <<'HTML'
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <title>Admin</title>
+    </head>
+    <body>
+      <h1>Admin area</h1>
+      <p>You authenticated with credentials stored in AWS Secrets Manager.</p>
+    </body>
+    </html>
+    HTML
+
+    # Hash the password from the Secrets Manager mount. Only the hash is
+    # written to the volume shared with nginx.
+    printf '%s:%s\n' "$(cat /mnt/secrets/username)" "$(mkpasswd -m sha512 -P 0 < /mnt/secrets/password)" > /site/auth/htpasswd
+    chown -R root:nginx /site/auth
+    chmod 0750 /site/auth
+    chmod 0640 /site/auth/htpasswd
