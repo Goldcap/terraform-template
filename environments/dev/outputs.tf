@@ -47,3 +47,8 @@ output "dashboard_url" {
   value       = "https://${var.region}.console.aws.amazon.com/cloudwatch/home?region=${var.region}#dashboards/dashboard/${module.monitoring.dashboard_name}"
   description = "CloudWatch dashboard for the web tier"
 }
+
+output "cpu_alarm_name" {
+  value       = module.monitoring.cpu_alarm_name
+  description = "Name of the high CPU CloudWatch alarm"
+}

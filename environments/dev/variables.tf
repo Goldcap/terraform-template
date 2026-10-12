@@ -54,6 +54,11 @@ variable "ssh_allowed_cidrs" {
   type = list(string)
 
   description = "CIDR blocks allowed to SSH to the bastion - your public IP as a /32 (curl -s https://checkip.amazonaws.com)"
+
+  validation {
+    condition     = length(var.ssh_allowed_cidrs) > 0 && alltrue([for cidr in var.ssh_allowed_cidrs : can(cidrhost(cidr, 0)) && cidr != "0.0.0.0/0"])
+    error_message = "ssh_allowed_cidrs must contain valid CIDR blocks and must not include 0.0.0.0/0."
+  }
 }
 
 variable "ssh_public_key" {
