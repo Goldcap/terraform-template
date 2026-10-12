@@ -18,6 +18,10 @@ resource "aws_key_pair" "this" {
 
 # The bastion host is the only SSH entry point: SSH in from trusted IPs only,
 # SSH/HTTP out to instances inside the VPC.
+#
+# Kept because the exercise asks for a bastion. In production this - and SSH
+# entirely - would be disabled in favor of SSM Session Manager: no inbound
+# ports, IAM-controlled and logged sessions, no keys (see README).
 module "bastion" {
   source = "../../modules/ec2"
 

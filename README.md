@@ -489,7 +489,9 @@ soon as you're done**.
   port 80 from exactly two sources, the bastion SG and the ALB SG, and nothing
   else.
 - **SSH:** only to the bastion, only from `ssh_allowed_cidrs`. Validation
-  rejects `0.0.0.0/0`. Web servers accept SSH only from the bastion.
+  only accepts specific single-host `/32` IPs. Web servers accept SSH only from
+  the bastion. **In production, SSH and the bastion would be disabled in favor
+  of SSM Session Manager** (see [Limitations](#limitations-and-next-steps)).
 - **ECS:** container instances accept task traffic only from the ALB's security
   group (on the dynamic port range) and SSH only from the bastion. The IMDS hop
   limit of 1 stops containers on the bridge network from reaching instance
@@ -574,9 +576,19 @@ running.
   *outbound* traffic from the private subnets. Serving traffic through the ALB
   is unaffected. For production, set `nat_gateway_enabled = true`, or use one
   NAT per AZ.
-- **Bastion vs. Session Manager:** AWS Systems Manager Session Manager could
-  replace the bastion entirely (no open SSH port, IAM-audited sessions). The
-  bastion is kept because the exercise asks for one.
+- **SSH and the bastion would be disabled in favor of SSM Session Manager.**
+  The bastion exists because the exercise asks for one; it isn't the production
+  design. With AWS Systems Manager Session Manager, instances need the SSM agent
+  (already on Amazon Linux 2023), an instance role with
+  `AmazonSSMManagedInstanceCore`, and a path to the SSM endpoints (the NAT, or
+  `ssm`/`ssmmessages`/`ec2messages` VPC endpoints). Then:
+    - Remove the bastion, the key pair and every port 22 security group rule:
+      nothing accepts inbound connections at all.
+    - Access is granted and revoked through IAM (`ssm:StartSession`, scoped by
+      tags), with no SSH keys to distribute or rotate.
+    - Every session can be logged to CloudWatch Logs or S3 for audit.
+    - Port forwarding (`AWS-StartPortForwardingSession`) replaces SSH tunnels
+      for debugging, e.g. reaching nginx on a private instance.
 - **ECS container instances aren't refreshed automatically.** The EC2
   platform rolls new AMIs out via instance refresh. For ECS, a new
   ECS-optimized AMI creates a new launch template version that applies to newly
