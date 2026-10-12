@@ -4,25 +4,27 @@
 # Usage:
 #   tests/smoke_test.sh [terraform-dir]      # default: environments/dev
 #
-# Values are read from `terraform output` in the given directory unless they
-# are already set in the environment (as they are in CI):
-#   ALB_DNS_NAME, ASG_NAME, ADMIN_SECRET_ARN, CPU_ALARM_NAME, AWS_REGION
+# Reads everything it needs from `terraform output` in the given directory and
+# checks every enabled web platform (EC2 Auto Scaling Group and/or ECS).
 #
-# Requires: curl, jq, and the AWS CLI with read access to the account.
+# Requires: terraform, curl, jq, and the AWS CLI with read access to the account.
 
 # shellcheck disable=SC2016  # backticks in --query strings are JMESPath literals
 set -euo pipefail
 
 TF_DIR="${1:-environments/dev}"
+OUTPUTS=$(terraform -chdir="$TF_DIR" output -json)
 
-tf_output() {
-  terraform -chdir="$TF_DIR" output -raw "$1"
+output() {
+  jq -r --arg name "$1" '.[$name].value // empty' <<<"$OUTPUTS"
 }
 
-ALB_DNS_NAME="${ALB_DNS_NAME:-$(tf_output alb_dns_name)}"
-ASG_NAME="${ASG_NAME:-$(tf_output autoscaling_group_name)}"
-ADMIN_SECRET_ARN="${ADMIN_SECRET_ARN:-$(tf_output admin_secret_arn)}"
-CPU_ALARM_NAME="${CPU_ALARM_NAME:-$(tf_output cpu_alarm_name)}"
+ALB_DNS_NAME=$(output alb_dns_name)
+ADMIN_SECRET_ARN=$(output admin_secret_arn)
+ASG_NAME=$(output autoscaling_group_name)
+ECS_CLUSTER=$(output ecs_cluster_name)
+ECS_SERVICE=$(output ecs_service_name)
+PLATFORMS=$(jq -r '.enabled_platforms.value[]' <<<"$OUTPUTS")
 AWS_REGION="${AWS_REGION:-$(cut -d: -f4 <<<"$ADMIN_SECRET_ARN")}"
 export AWS_REGION
 
@@ -50,11 +52,27 @@ server_header_hides_version() {
   ! curl -sI --max-time 10 "$1" | grep -qi '^server: nginx/'
 }
 
-echo "Smoke testing ${BASE_URL} (region ${AWS_REGION})"
+alarm_notifies_sns() {
+  jq -e '.AlarmActions | any(startswith("arn:aws:sns:"))' <<<"$1" >/dev/null
+}
+
+no_public_ips() {
+  # shellcheck disable=SC2086  # instance IDs are intentionally word-split
+  test -z "$(aws ec2 describe-instances --instance-ids $1 \
+    --query 'Reservations[].Instances[?PublicIpAddress!=`null`].PublicIpAddress' --output text)"
+}
+
+instance_types_are() {
+  # shellcheck disable=SC2086
+  test "$(aws ec2 describe-instances --instance-ids $1 \
+    --query 'Reservations[].Instances[].InstanceType' --output text | tr '\t' '\n' | sort -u)" = "$2"
+}
+
+echo "Smoke testing ${BASE_URL} (region ${AWS_REGION}, platforms: $(echo "$PLATFORMS" | xargs))"
 
 # --- Web application via the ALB ------------------------------------------------
-# A fresh deployment can take a few minutes for cloud-init to finish and the
-# target to pass health checks, so wait for the first successful response.
+# A fresh deployment can take a few minutes for start-up to finish and targets
+# to pass health checks, so wait for the first successful response.
 echo "Waiting for the application to respond..."
 for attempt in $(seq 1 40); do
   if curl -sf --max-time 10 "${BASE_URL}/" | grep -q "Hello, World!"; then
@@ -79,48 +97,69 @@ if SECRET=$(aws secretsmanager get-secret-value --secret-id "$ADMIN_SECRET_ARN" 
   ADMIN_USER=$(jq -r .username <<<"$SECRET")
   ADMIN_PASS=$(jq -r .password <<<"$SECRET")
   unset SECRET
-  check "GET /admin/ with Secrets Manager credentials returns 200" \
-    test "$(http_status -u "${ADMIN_USER}:${ADMIN_PASS}" "${BASE_URL}/admin/")" = "200"
+  # Several requests, so every platform behind the load balancer is exercised.
+  ADMIN_CODES=$(for _ in $(seq 1 10); do http_status -u "${ADMIN_USER}:${ADMIN_PASS}" "${BASE_URL}/admin/"; echo; done | sort -u | xargs)
+  check "GET /admin/ with Secrets Manager credentials returns 200 on every platform (got: ${ADMIN_CODES})" test "$ADMIN_CODES" = "200"
   unset ADMIN_PASS
 else
   echo "  SKIP  /admin/ login (no permission to read ${ADMIN_SECRET_ARN})"
 fi
 
+# Every enabled platform must actually be serving traffic through the ALB.
+SERVED_BY=$(for _ in $(seq 1 30); do curl -s --max-time 10 "${BASE_URL}/" | grep -o 'Served by [A-Z0-9]*' || true; done | sort | uniq -c)
+for platform in $PLATFORMS; do
+  label=$(tr '[:lower:]' '[:upper:]' <<<"$platform")
+  check "Platform ${platform} is serving requests through the ALB" grep -q "Served by ${label}" <<<"$SERVED_BY"
+done
+
 # --- Infrastructure -------------------------------------------------------------
 echo "Infrastructure:"
-ASG_JSON=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$ASG_NAME" --query 'AutoScalingGroups[0]')
+for platform in $PLATFORMS; do
+  TARGET_GROUP_ARN=$(jq -r --arg p "$platform" '.target_group_arns.value[$p]' <<<"$OUTPUTS")
+  HEALTH=$(aws elbv2 describe-target-health --target-group-arn "$TARGET_GROUP_ARN" --query 'TargetHealthDescriptions[].TargetHealth.State' --output text | tr '\t' '\n')
+  HEALTHY=$(grep -c '^healthy$' <<<"$HEALTH" || true)
+  UNHEALTHY=$(grep -vc '^healthy$' <<<"$HEALTH" || true)
+  check "${platform}: all load balancer targets healthy (${HEALTHY} healthy, ${UNHEALTHY} not)" test "$UNHEALTHY" = "0" -a "$HEALTHY" -ge 1
+done
 
-check "Auto Scaling Group min size is 1" test "$(jq -r .MinSize <<<"$ASG_JSON")" = "1"
-check "Auto Scaling Group max size is 3" test "$(jq -r .MaxSize <<<"$ASG_JSON")" = "3"
+if [ -n "$ASG_NAME" ]; then
+  ASG_JSON=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$ASG_NAME" --query 'AutoScalingGroups[0]')
+  check "ec2: Auto Scaling Group min size is 1" test "$(jq -r .MinSize <<<"$ASG_JSON")" = "1"
+  check "ec2: Auto Scaling Group max size is 3" test "$(jq -r .MaxSize <<<"$ASG_JSON")" = "3"
+  POLICY_METRIC=$(aws autoscaling describe-policies --auto-scaling-group-name "$ASG_NAME" \
+    --query 'ScalingPolicies[0].TargetTrackingConfiguration.PredefinedMetricSpecification.PredefinedMetricType' --output text)
+  check "ec2: Auto Scaling Group scales on CPU" test "$POLICY_METRIC" = "ASGAverageCPUUtilization"
+  INSTANCE_IDS=$(jq -r '.Instances[].InstanceId' <<<"$ASG_JSON" | xargs)
+  check "ec2: web servers have no public IP addresses" no_public_ips "$INSTANCE_IDS"
+  check "ec2: web servers are t2.micro" instance_types_are "$INSTANCE_IDS" "t2.micro"
+fi
 
-POLICY_METRIC=$(aws autoscaling describe-policies --auto-scaling-group-name "$ASG_NAME" \
-  --query 'ScalingPolicies[0].TargetTrackingConfiguration.PredefinedMetricSpecification.PredefinedMetricType' --output text)
-check "Auto Scaling Group scales on CPU" test "$POLICY_METRIC" = "ASGAverageCPUUtilization"
+if [ -n "$ECS_SERVICE" ]; then
+  SERVICE_JSON=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" --query 'services[0]')
+  check "ecs: service is ACTIVE with at least 1 running task" test "$(jq -r '.status' <<<"$SERVICE_JSON")" = "ACTIVE" -a "$(jq -r '.runningCount' <<<"$SERVICE_JSON")" -ge 1
+  SCALING_JSON=$(aws application-autoscaling describe-scalable-targets --service-namespace ecs \
+    --resource-ids "service/${ECS_CLUSTER}/${ECS_SERVICE}" --query 'ScalableTargets[0]')
+  check "ecs: service scales between 1 and 3 tasks" test "$(jq -r '"\(.MinCapacity)-\(.MaxCapacity)"' <<<"$SCALING_JSON")" = "1-3"
+  SCALING_METRIC=$(aws application-autoscaling describe-scaling-policies --service-namespace ecs \
+    --resource-id "service/${ECS_CLUSTER}/${ECS_SERVICE}" \
+    --query 'ScalingPolicies[0].TargetTrackingScalingPolicyConfiguration.PredefinedMetricSpecification.PredefinedMetricType' --output text)
+  check "ecs: service scales on CPU" test "$SCALING_METRIC" = "ECSServiceAverageCPUUtilization"
+  TASK_DEFINITION=$(aws ecs describe-task-definition --task-definition "$(jq -r .taskDefinition <<<"$SERVICE_JSON")" --query 'taskDefinition')
+  check "ecs: admin credentials are injected from Secrets Manager" \
+    test "$(jq -r '[.containerDefinitions[0].secrets[].valueFrom | startswith("arn:aws:secretsmanager:")] | all' <<<"$TASK_DEFINITION")" = "true"
+  CONTAINER_INSTANCES=$(aws ecs list-container-instances --cluster "$ECS_CLUSTER" --query 'containerInstanceArns' --output text)
+  # shellcheck disable=SC2086
+  ECS_INSTANCE_IDS=$(aws ecs describe-container-instances --cluster "$ECS_CLUSTER" --container-instances $CONTAINER_INSTANCES \
+    --query 'containerInstances[].ec2InstanceId' --output text | xargs)
+  check "ecs: container instances have no public IP addresses" no_public_ips "$ECS_INSTANCE_IDS"
+  check "ecs: container instances are t2.micro" instance_types_are "$ECS_INSTANCE_IDS" "t2.micro"
+fi
 
-TARGET_GROUP_ARN=$(jq -r '.TargetGroupARNs[0]' <<<"$ASG_JSON")
-UNHEALTHY=$(aws elbv2 describe-target-health --target-group-arn "$TARGET_GROUP_ARN" \
-  --query 'length(TargetHealthDescriptions[?TargetHealth.State!=`healthy`])' --output text)
-HEALTHY=$(aws elbv2 describe-target-health --target-group-arn "$TARGET_GROUP_ARN" \
-  --query 'length(TargetHealthDescriptions[?TargetHealth.State==`healthy`])' --output text)
-check "All load balancer targets are healthy (${HEALTHY} healthy, ${UNHEALTHY} not)" test "$UNHEALTHY" = "0" -a "$HEALTHY" -ge 1
-
-INSTANCE_IDS=$(jq -r '.Instances[].InstanceId' <<<"$ASG_JSON")
-# shellcheck disable=SC2086
-PUBLIC_IPS=$(aws ec2 describe-instances --instance-ids $INSTANCE_IDS \
-  --query 'Reservations[].Instances[?PublicIpAddress!=`null`].PublicIpAddress' --output text)
-check "Web servers have no public IP addresses" test -z "$PUBLIC_IPS"
-
-# shellcheck disable=SC2086
-INSTANCE_TYPES=$(aws ec2 describe-instances --instance-ids $INSTANCE_IDS \
-  --query 'Reservations[].Instances[].InstanceType' --output text | tr '\t' '\n' | sort -u)
-check "Web servers are t2.micro" test "$INSTANCE_TYPES" = "t2.micro"
-
-ALARM_JSON=$(aws cloudwatch describe-alarms --alarm-names "$CPU_ALARM_NAME" --query 'MetricAlarms[0]')
-check "CPU alarm threshold is 70%" test "$(jq -r .Threshold <<<"$ALARM_JSON")" = "70.0"
-alarm_notifies_sns() {
-  jq -e '.AlarmActions | any(startswith("arn:aws:sns:"))' <<<"$1" >/dev/null
-}
-check "CPU alarm notifies an SNS topic" alarm_notifies_sns "$ALARM_JSON"
+for alarm in $(jq -r '.cpu_alarm_names.value[]' <<<"$OUTPUTS"); do
+  ALARM_JSON=$(aws cloudwatch describe-alarms --alarm-names "$alarm" --query 'MetricAlarms[0]')
+  check "${alarm}: threshold is 70%" test "$(jq -r .Threshold <<<"$ALARM_JSON")" = "70.0"
+  check "${alarm}: notifies an SNS topic" alarm_notifies_sns "$ALARM_JSON"
+done
 
 echo
 echo "${PASSED} passed, ${FAILED} failed"
