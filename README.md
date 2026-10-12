@@ -173,7 +173,7 @@ push to main ─► validate ─► plan ─► ⏸ manual approval ─► apply
 | Job | What it does |
 |---|---|
 | **validate** | `terraform fmt -check`, `terraform validate` for every root and module, TFLint, `terraform test` (module unit tests with mocked AWS, so no credentials needed), and shellcheck |
-| **plan** | Assumes the **read-only** plan role over OIDC, runs `terraform plan -detailed-exitcode`, publishes the plan to the job summary, and on `main` uploads the plan file |
+| **plan** | Assumes the **read-only** plan role over OIDC, runs `terraform plan -detailed-exitcode`, lists the planned resource actions in the job summary, and on `main` uploads the plan file |
 | **apply** | Runs in the `production` GitHub environment, so it **waits for a required reviewer to approve**. It then applies *the exact plan file that was reviewed*, using the apply role, which only trusts that environment |
 | **smoke-test** | Runs [`tests/smoke_test.sh`](tests/smoke_test.sh) to confirm the app is reachable through the ALB and the infrastructure is configured as expected |
 
@@ -189,18 +189,20 @@ providers current. Until the repository variables below are set, only
 1. Apply the [bootstrap](#1-bootstrap-once-per-aws-account) stack.
 2. **Settings → Environments → New environment** named `production`, then add
    yourself under **Required reviewers**. This is the manual approval gate.
-3. Add the repository **variables** (Settings → Secrets and variables →
-   Actions → Variables). None of them are credentials:
+3. Add the repository **variables** and **secrets** (Settings → Secrets and
+   variables → Actions). None of these are credentials. Your IP and email are
+   stored as secrets only so GitHub masks them, because a public repository's
+   Actions logs are public:
 
-   | Variable | Example |
-   |---|---|
-   | `AWS_REGION` | `us-east-1` |
-   | `TF_STATE_BUCKET` | `state_bucket` output of bootstrap |
-   | `AWS_PLAN_ROLE_ARN` | `github_plan_role_arn` output |
-   | `AWS_APPLY_ROLE_ARN` | `github_apply_role_arn` output |
-   | `SSH_ALLOWED_CIDRS` | `["203.0.113.10/32"]` (HCL list) |
-   | `SSH_PUBLIC_KEY` | contents of `~/.ssh/id_ed25519.pub` |
-   | `ALARM_EMAIL` | `you@example.com` |
+   | Name | Type | Example |
+   |---|---|---|
+   | `AWS_REGION` | variable | `us-east-1` |
+   | `TF_STATE_BUCKET` | variable | `state_bucket` output of bootstrap |
+   | `AWS_PLAN_ROLE_ARN` | variable | `github_plan_role_arn` output |
+   | `AWS_APPLY_ROLE_ARN` | variable | `github_apply_role_arn` output |
+   | `SSH_PUBLIC_KEY` | variable | `ssh-ed25519 AAAA...` (drop the trailing comment) |
+   | `SSH_ALLOWED_CIDRS` | secret | `["203.0.113.10/32"]` (HCL list) |
+   | `ALARM_EMAIL` | secret | `you@example.com` |
 
    With the GitHub CLI:
 
@@ -210,9 +212,9 @@ providers current. Until the repository variables below are set, only
    gh variable set TF_STATE_BUCKET    --body "$(terraform output -raw state_bucket)"
    gh variable set AWS_PLAN_ROLE_ARN  --body "$(terraform output -raw github_plan_role_arn)"
    gh variable set AWS_APPLY_ROLE_ARN --body "$(terraform output -raw github_apply_role_arn)"
-   gh variable set SSH_ALLOWED_CIDRS  --body "[\"$(curl -s https://checkip.amazonaws.com)/32\"]"
-   gh variable set SSH_PUBLIC_KEY     < ~/.ssh/id_ed25519.pub
-   gh variable set ALARM_EMAIL        --body you@example.com
+   gh variable set SSH_PUBLIC_KEY     --body "$(cut -d' ' -f1,2 ~/.ssh/id_ed25519.pub)"
+   gh secret set   SSH_ALLOWED_CIDRS  --body "[\"$(curl -s https://checkip.amazonaws.com)/32\"]"
+   gh secret set   ALARM_EMAIL        --body you@example.com
    ```
 
 4. Push to `main` (or run the workflow manually), review the plan, and approve

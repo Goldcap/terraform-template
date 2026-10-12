@@ -6,8 +6,10 @@ resource "aws_security_group" "this" {
   tags = { Name = "${var.name}-bastion" }
 }
 
+# Keyed by position rather than by CIDR so the trusted IP doesn't appear in
+# resource addresses (and therefore in public CI logs).
 resource "aws_vpc_security_group_ingress_rule" "ssh" {
-  for_each = toset(var.ssh_allowed_cidrs)
+  for_each = { for index, cidr in var.ssh_allowed_cidrs : tostring(index) => cidr }
 
   security_group_id = aws_security_group.this.id
   description       = "SSH from trusted IP"

@@ -73,7 +73,8 @@ variable "ssh_public_key" {
 }
 
 variable "alarm_email" {
-  type = string
+  type      = string
+  sensitive = true
 
   description = "Email address for CloudWatch alarm and budget notifications"
 }

@@ -42,12 +42,12 @@ run "ssh_is_only_open_to_the_trusted_ip" {
   command = plan
 
   assert {
-    condition     = keys(aws_vpc_security_group_ingress_rule.ssh) == ["203.0.113.10/32"]
+    condition     = [for rule in aws_vpc_security_group_ingress_rule.ssh : rule.cidr_ipv4] == ["203.0.113.10/32"]
     error_message = "Bastion SSH must only be open to the configured trusted CIDR."
   }
 
   assert {
-    condition     = aws_vpc_security_group_ingress_rule.ssh["203.0.113.10/32"].from_port == 22
+    condition     = alltrue([for rule in aws_vpc_security_group_ingress_rule.ssh : rule.from_port == 22 && rule.to_port == 22])
     error_message = "The bastion must only accept SSH."
   }
 }
