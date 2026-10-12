@@ -21,6 +21,23 @@ variable "github_repository" {
   }
 }
 
+variable "github_oidc_subject_prefix" {
+  type    = string
+  default = null
+
+  description = <<-EOT
+    Prefix of the GitHub OIDC "sub" claim. Defaults to "repo:<github_repository>".
+    Repositories using GitHub's immutable subject format need the ID-qualified
+    prefix instead, e.g. "repo:owner@123/name@456". Look it up with:
+      gh api repos/OWNER/REPO/actions/oidc/customization/sub --jq .sub_claim_prefix
+  EOT
+
+  validation {
+    condition     = var.github_oidc_subject_prefix == null || startswith(coalesce(var.github_oidc_subject_prefix, "x"), "repo:")
+    error_message = "github_oidc_subject_prefix must start with \"repo:\"."
+  }
+}
+
 variable "github_apply_environment" {
   type    = string
   default = "production"

@@ -3,5 +3,9 @@ project           = "hello-world"
 region            = "us-east-1"
 github_repository = "your-github-user/your-repo"
 
+# Only if the repository uses GitHub's immutable OIDC subject format:
+#   gh api repos/OWNER/REPO/actions/oidc/customization/sub --jq .sub_claim_prefix
+# github_oidc_subject_prefix = "repo:owner@123/name@456"
+
 # Set to false if the AWS account already has the GitHub OIDC provider.
 create_github_oidc_provider = true

@@ -135,7 +135,11 @@ terraform output                               # note state_bucket and the two r
 ```
 
 Set `create_github_oidc_provider = false` if your account already has the
-GitHub OIDC provider.
+GitHub OIDC provider. If your repository uses GitHub's immutable OIDC subject
+format (`repo:owner@id/name@id`), set `github_oidc_subject_prefix` to the value
+of `gh api repos/OWNER/REPO/actions/oidc/customization/sub --jq .sub_claim_prefix`.
+Otherwise CI fails with "Not authorized to perform
+sts:AssumeRoleWithWebIdentity".
 
 ### 2. Deploy the environment
 

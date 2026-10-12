@@ -18,6 +18,13 @@ variable "github_repository" {
   description = "GitHub repository allowed to assume the CI roles, in 'owner/name' form"
 }
 
+variable "github_oidc_subject_prefix" {
+  type    = string
+  default = null
+
+  description = "GitHub OIDC sub claim prefix, for repositories using immutable subjects (see modules/bootstrap)"
+}
+
 variable "github_apply_environment" {
   type    = string
   default = "production"

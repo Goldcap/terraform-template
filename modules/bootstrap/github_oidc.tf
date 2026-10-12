@@ -7,6 +7,8 @@
 #             environment that requires a manual approval.
 
 locals {
+  github_subject_prefix = coalesce(var.github_oidc_subject_prefix, "repo:${var.github_repository}")
+
   github_oidc_provider_arn = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : "arn:aws:iam::${local.account_id}:oidc-provider/token.actions.githubusercontent.com"
 }
 
@@ -36,7 +38,7 @@ data "aws_iam_policy_document" "github_trust_plan" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:*"]
+      values   = ["${local.github_subject_prefix}:*"]
     }
   }
 }
@@ -60,7 +62,7 @@ data "aws_iam_policy_document" "github_trust_apply" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:environment:${var.github_apply_environment}"]
+      values   = ["${local.github_subject_prefix}:environment:${var.github_apply_environment}"]
     }
   }
 }

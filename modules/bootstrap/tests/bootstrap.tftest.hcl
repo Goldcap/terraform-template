@@ -88,6 +88,30 @@ run "apply_role_is_only_assumable_from_the_approval_environment" {
   }
 }
 
+run "supports_immutable_oidc_subjects" {
+  command = plan
+
+  variables {
+    github_oidc_subject_prefix = "repo:example-org@111/example-repo@222"
+  }
+
+  override_resource {
+    target          = aws_iam_openid_connect_provider.github[0]
+    override_during = plan
+    values = {
+      arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+    }
+  }
+
+  assert {
+    condition = anytrue([
+      for c in one(data.aws_iam_policy_document.github_trust_apply.statement).condition :
+      toset(c.values) == toset(["repo:example-org@111/example-repo@222:environment:production"])
+    ])
+    error_message = "The apply role must trust the ID-qualified subject when one is given."
+  }
+}
+
 run "can_reuse_an_existing_oidc_provider" {
   command = plan
 
