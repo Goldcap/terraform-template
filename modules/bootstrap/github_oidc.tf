@@ -107,7 +107,8 @@ data "aws_iam_policy_document" "terraform_apply" {
       "autoscaling:*",
       "cloudwatch:*",
       "ecs:*",
-      "application-autoscaling:*"
+      "application-autoscaling:*",
+      "eks:*"
     ]
     resources = ["*"]
 
@@ -194,7 +195,11 @@ data "aws_iam_policy_document" "terraform_apply" {
       test     = "ArnEquals"
       variable = "iam:PolicyARN"
       values = [
-        "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+        "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role",
+        "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy",
+        "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+        "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
+        "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
       ]
     }
   }
@@ -210,7 +215,9 @@ data "aws_iam_policy_document" "terraform_apply" {
       variable = "iam:PassedToService"
       values = [
         "ec2.amazonaws.com",
-        "ecs-tasks.amazonaws.com"
+        "ecs-tasks.amazonaws.com",
+        "eks.amazonaws.com",
+        "pods.eks.amazonaws.com"
       ]
     }
   }
@@ -228,7 +235,9 @@ data "aws_iam_policy_document" "terraform_apply" {
         "autoscaling.amazonaws.com",
         "elasticloadbalancing.amazonaws.com",
         "ecs.amazonaws.com",
-        "ecs.application-autoscaling.amazonaws.com"
+        "ecs.application-autoscaling.amazonaws.com",
+        "eks.amazonaws.com",
+        "eks-nodegroup.amazonaws.com"
       ]
     }
   }
