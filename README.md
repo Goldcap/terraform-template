@@ -63,11 +63,11 @@ flowchart LR
 | Requirement | Implementation |
 |---|---|
 | t2.micro EC2 in a custom VPC with public and private subnets | [`modules/network`](modules/network) (wraps `terraform-aws-modules/vpc`); `instance_type` defaults to `t2.micro` everywhere |
-| Bastion host in the public subnet | [`modules/bastion`](modules/bastion) |
+| Bastion host in the public subnet | `module "bastion"` in [`environments/dev/main.tf`](environments/dev/main.tf), built on the generic [`modules/ec2`](modules/ec2) |
 | Web server on EC2 in the private subnet | [`modules/web/asg.tf`](modules/web/asg.tf): launch template plus ASG in the private subnets, no public IPs |
 | HTTP (80) to the web server from the bastion only | [`modules/web/security_groups.tf`](modules/web/security_groups.tf): web SG allows port 80 only from the bastion SG **and the ALB SG** (the ALB has to reach the targets; see [Security notes](#security-notes)) |
-| SSH to the bastion from your IP | [`modules/bastion/security_groups.tf`](modules/bastion/security_groups.tf): `ssh_allowed_cidrs`, with validation that rejects `0.0.0.0/0` |
-| Least-privilege IAM roles for instances | Web: publish metrics only to the `CWAgent` namespace, `ec2:DescribeTags`, and read **its own** secret ([`modules/web/iam.tf`](modules/web/iam.tf)). Bastion: `ec2:DescribeInstances` only ([`modules/bastion/iam.tf`](modules/bastion/iam.tf)). NAT: no role |
+| SSH to the bastion from your IP | `ssh_allowed_cidrs` in [`environments/dev`](environments/dev/variables.tf): validation only accepts specific single-host `/32` IPs |
+| Least-privilege IAM roles for instances | Web: publish metrics only to the `CWAgent` namespace, `ec2:DescribeTags`, and read **its own** secret ([`modules/web/iam.tf`](modules/web/iam.tf)). Bastion: `ec2:DescribeInstances` only ([`environments/dev/main.tf`](environments/dev/main.tf)). NAT: no role at all ([`modules/ec2`](modules/ec2) only creates a role when given a policy) |
 | "Hello, World!" web application | nginx page that also shows which instance and AZ served it |
 | Automated deployment (cloud-init) | [`modules/web/templates/user_data.sh.tftpl`](modules/web/templates/user_data.sh.tftpl) |
 | ALB in front of the web server | [`modules/web/alb.tf`](modules/web/alb.tf) |
@@ -90,7 +90,7 @@ flowchart LR
 ├── modules/
 │   ├── bootstrap/           # State bucket, GitHub OIDC provider, plan/apply roles
 │   ├── network/             # VPC, subnets, NAT instance/gateway, S3 endpoint
-│   ├── bastion/             # Bastion host, its security group and IAM role
+│   ├── ec2/                 # Generic hardened EC2 instance (used for the bastion and NAT instance)
 │   ├── web/                 # ALB, launch template, ASG, scaling, cloud-init, secret
 │   └── monitoring/          # SNS, CloudWatch alarms and dashboard, AWS Budget
 │   (each module has tests/*.tftest.hcl unit tests)

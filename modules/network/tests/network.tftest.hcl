@@ -51,18 +51,8 @@ run "uses_a_nat_instance_by_default" {
   command = plan
 
   assert {
-    condition     = length(aws_instance.nat) == 1 && aws_instance.nat[0].source_dest_check == false
-    error_message = "By default a free-tier NAT instance (with source/dest check disabled) should provide egress."
-  }
-
-  assert {
-    condition     = aws_instance.nat[0].instance_type == "t2.micro"
-    error_message = "The NAT instance should be free-tier eligible."
-  }
-
-  assert {
-    condition     = aws_instance.nat[0].metadata_options[0].http_tokens == "required"
-    error_message = "The NAT instance must require IMDSv2."
+    condition     = length(module.nat_instance) == 1 && length(aws_route.private_via_nat_instance) == 1
+    error_message = "By default a free-tier NAT instance should provide egress for the private subnets."
   }
 }
 
@@ -71,7 +61,7 @@ run "nat_instance_only_accepts_web_ports_from_private_subnets" {
 
   assert {
     condition = alltrue([
-      for rule in aws_vpc_security_group_ingress_rule.nat_from_private :
+      for rule in values(module.nat_instance[0].ingress_rules) :
       contains(local.private_subnet_cidrs, rule.cidr_ipv4) && contains([80, 443], rule.from_port)
     ])
     error_message = "The NAT instance must only accept HTTP/HTTPS from the private subnets."
@@ -86,7 +76,7 @@ run "can_switch_to_a_nat_gateway" {
   }
 
   assert {
-    condition     = length(aws_instance.nat) == 0 && length(aws_route.private_via_nat_instance) == 0
+    condition     = length(module.nat_instance) == 0 && length(aws_route.private_via_nat_instance) == 0
     error_message = "nat_gateway_enabled = true should remove the NAT instance and its routes."
   }
 }

@@ -19,6 +19,6 @@ output "private_subnet_ids" {
 }
 
 output "nat_public_ip" {
-  value       = var.nat_gateway_enabled ? module.vpc.nat_public_ips[0] : aws_instance.nat[0].public_ip
+  value       = var.nat_gateway_enabled ? module.vpc.nat_public_ips[0] : module.nat_instance[0].public_ip
   description = "Public IP that private-subnet traffic egresses from"
 }

@@ -53,11 +53,11 @@ variable "instance_type" {
 variable "ssh_allowed_cidrs" {
   type = list(string)
 
-  description = "CIDR blocks allowed to SSH to the bastion - your public IP as a /32 (curl -s https://checkip.amazonaws.com)"
+  description = "Specific IPs allowed to SSH to the bastion, each as a single-host /32 - e.g. your public IP (curl -s https://checkip.amazonaws.com)"
 
   validation {
-    condition     = length(var.ssh_allowed_cidrs) > 0 && alltrue([for cidr in var.ssh_allowed_cidrs : can(cidrhost(cidr, 0)) && cidr != "0.0.0.0/0"])
-    error_message = "ssh_allowed_cidrs must contain valid CIDR blocks and must not include 0.0.0.0/0."
+    condition     = length(var.ssh_allowed_cidrs) > 0 && alltrue([for cidr in var.ssh_allowed_cidrs : can(cidrhost(cidr, 0)) && endswith(cidr, "/32")])
+    error_message = "ssh_allowed_cidrs must be pinned to specific IPs: single-host /32 CIDRs only (no ranges, no 0.0.0.0/0)."
   }
 }
 

@@ -64,9 +64,11 @@ jobs:
           tflint --init --config="${GITHUB_WORKSPACE}/.tflint.hcl"
           tflint --recursive --config="${GITHUB_WORKSPACE}/.tflint.hcl" --format=compact
 
-      - name: terraform test (module unit tests, mocked AWS)
+      - name: terraform test (unit tests, mocked AWS)
         run: |
-          for dir in modules/*/; do
+          for tests in modules/*/tests environments/*/tests; do
+            [ -d "${tests}" ] || continue
+            dir=$(dirname "${tests}")
             echo "::group::test ${dir}"
             terraform -chdir="${dir}" test
             echo "::endgroup::"
