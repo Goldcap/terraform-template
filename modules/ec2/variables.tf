@@ -122,3 +122,10 @@ variable "iam_policy_json" {
 
   description = "IAM policy (JSON) granting the instance only what it needs. Leave null for an instance with no IAM role at all."
 }
+
+variable "permissions_boundary" {
+  type    = string
+  default = null
+
+  description = "ARN of the IAM permissions boundary to set on every role this module creates (the bootstrap stack's workload_boundary_arn)"
+}

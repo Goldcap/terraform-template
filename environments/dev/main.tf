@@ -1,5 +1,9 @@
 locals {
   name = "${var.project}-${var.environment}"
+
+  # Created by environments/bootstrap. The CI apply role may only create
+  # roles that carry it.
+  permissions_boundary_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:policy/${var.project}-workload-boundary"
 }
 
 module "network" {
@@ -70,6 +74,8 @@ module "bastion" {
   }
 
   iam_policy_json = data.aws_iam_policy_document.bastion.json
+
+  permissions_boundary = local.permissions_boundary_arn
 }
 
 # The bastion only needs to look up the private IPs of the web servers.
@@ -102,6 +108,8 @@ module "web_asg" {
   min_size                  = var.web_min_size
   max_size                  = var.web_max_size
   cpu_target_utilization    = var.cpu_target_utilization
+
+  permissions_boundary = local.permissions_boundary_arn
 }
 
 module "web_ecs" {
@@ -122,6 +130,8 @@ module "web_ecs" {
 
   # Keep the NAT path until the service has drained (see modules/web-ecs).
   egress_dependency = module.network.egress_id
+
+  permissions_boundary = local.permissions_boundary_arn
 }
 
 data "aws_caller_identity" "current" {}
@@ -158,6 +168,8 @@ module "web_eks" {
   cluster_admin_principal_arns    = distinct(concat([local.ci_apply_role_arn], var.eks_admin_principal_arns))
   cluster_viewer_principal_arns   = [local.ci_plan_role_arn]
   bootstrap_cluster_creator_admin = data.aws_iam_session_context.current.issuer_arn != local.ci_apply_role_arn
+
+  permissions_boundary = local.permissions_boundary_arn
 }
 
 locals {

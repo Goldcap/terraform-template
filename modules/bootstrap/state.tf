@@ -74,6 +74,24 @@ resource "aws_s3_bucket_lifecycle_configuration" "state" {
     }
   }
 
+  # Saved plans from CI are only needed between plan and apply.
+  rule {
+    id     = "expire-saved-plans"
+    status = "Enabled"
+
+    filter {
+      prefix = "plans/"
+    }
+
+    expiration {
+      days = 7
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+  }
+
   depends_on = [aws_s3_bucket_versioning.state]
 }
 

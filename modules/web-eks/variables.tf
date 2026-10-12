@@ -117,3 +117,10 @@ variable "egress_dependency" {
 
   description = "Pass the network module's egress_id. Ties this platform's teardown to the NAT path so it outlives the workloads that need it to drain."
 }
+
+variable "permissions_boundary" {
+  type    = string
+  default = null
+
+  description = "ARN of the IAM permissions boundary to set on every role this module creates (the bootstrap stack's workload_boundary_arn)"
+}

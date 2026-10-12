@@ -134,3 +134,60 @@ run "rejects_malformed_repository" {
 
   expect_failures = [var.github_repository]
 }
+
+run "apply_role_cannot_escalate_through_iam" {
+  command = plan
+
+  assert {
+    condition = anytrue([
+      for s in data.aws_iam_policy_document.terraform_apply.statement :
+      s.sid == "GrantOnlyWithinBoundary" && contains(s.actions, "iam:CreateRole") && contains(s.actions, "iam:PutRolePolicy") &&
+      anytrue([for c in s.condition : c.variable == "iam:PermissionsBoundary" && toset(c.values) == toset(["arn:aws:iam::123456789012:policy/hello-world-workload-boundary"])])
+    ])
+    error_message = "Creating roles or granting them inline policies must require the workload permissions boundary."
+  }
+
+  assert {
+    condition = alltrue([
+      for s in data.aws_iam_policy_document.terraform_apply.statement :
+      !contains(s.actions, "iam:CreateRole") && !contains(s.actions, "iam:PutRolePolicy") && !contains(s.actions, "iam:AttachRolePolicy") ||
+      anytrue([for c in s.condition : c.variable == "iam:PermissionsBoundary"])
+      if s.effect == "Allow"
+    ])
+    error_message = "No statement may grant role creation or policies without the permissions boundary condition."
+  }
+
+  assert {
+    condition = anytrue([
+      for s in data.aws_iam_policy_document.terraform_apply.statement :
+      s.effect == "Deny" && contains(s.actions, "iam:*") && toset(s.resources) == toset(["arn:aws:iam::123456789012:role/hello-world-github-*"])
+    ])
+    error_message = "The apply role must not be able to modify the CI roles."
+  }
+
+  assert {
+    condition     = aws_iam_policy.workload_boundary.name == "hello-world-workload-boundary"
+    error_message = "The boundary policy name must match the ARN the environments set on their roles."
+  }
+}
+
+run "plan_role_cannot_write_state" {
+  command = plan
+
+  override_resource {
+    target          = aws_s3_bucket.state
+    override_during = plan
+    values = {
+      arn = "arn:aws:s3:::hello-world-tfstate-123456789012-us-east-1"
+    }
+  }
+
+  assert {
+    condition = alltrue(flatten([
+      for s in data.aws_iam_policy_document.terraform_state_plan.statement : [
+        for r in s.resources : endswith(r, ".tflock") || strcontains(r, "/plans/")
+      ] if contains(s.actions, "s3:PutObject") || contains(s.actions, "s3:DeleteObject")
+    ]))
+    error_message = "The plan role may only write lock files and saved plans, never state."
+  }
+}

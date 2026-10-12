@@ -12,3 +12,8 @@ output "github_apply_role_arn" {
   value       = aws_iam_role.github_apply.arn
   description = "Set as the AWS_APPLY_ROLE_ARN GitHub variable"
 }
+
+output "workload_boundary_arn" {
+  value       = aws_iam_policy.workload_boundary.arn
+  description = "Permissions boundary every role created by the environments must carry"
+}

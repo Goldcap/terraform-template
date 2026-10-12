@@ -13,7 +13,8 @@ resource "aws_iam_role" "nodes" {
   name        = "${var.name}-eks-node"
   description = "EKS worker node role for ${var.name}."
 
-  assume_role_policy = data.aws_iam_policy_document.ec2_assume_role.json
+  assume_role_policy   = data.aws_iam_policy_document.ec2_assume_role.json
+  permissions_boundary = var.permissions_boundary
 }
 
 resource "aws_iam_role_policy_attachment" "nodes" {

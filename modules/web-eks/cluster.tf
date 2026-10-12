@@ -15,7 +15,8 @@ resource "aws_iam_role" "cluster" {
   name        = "${var.name}-eks-cluster"
   description = "EKS control plane role for ${var.name}."
 
-  assume_role_policy = data.aws_iam_policy_document.eks_assume_role.json
+  assume_role_policy   = data.aws_iam_policy_document.eks_assume_role.json
+  permissions_boundary = var.permissions_boundary
 }
 
 resource "aws_iam_role_policy_attachment" "cluster" {

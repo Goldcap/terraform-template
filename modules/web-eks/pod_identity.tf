@@ -19,7 +19,8 @@ resource "aws_iam_role" "load_balancer_controller" {
   name        = "${var.name}-eks-lb-controller"
   description = "AWS Load Balancer Controller in the ${var.name} EKS cluster."
 
-  assume_role_policy = data.aws_iam_policy_document.pod_identity_assume_role.json
+  assume_role_policy   = data.aws_iam_policy_document.pod_identity_assume_role.json
+  permissions_boundary = var.permissions_boundary
 }
 
 resource "aws_iam_role_policy" "load_balancer_controller" {
@@ -54,7 +55,8 @@ resource "aws_iam_role" "nginx" {
   name        = "${var.name}-eks-nginx"
   description = "nginx pods in the ${var.name} EKS cluster: read the admin secret only."
 
-  assume_role_policy = data.aws_iam_policy_document.pod_identity_assume_role.json
+  assume_role_policy   = data.aws_iam_policy_document.pod_identity_assume_role.json
+  permissions_boundary = var.permissions_boundary
 }
 
 resource "aws_iam_role_policy" "nginx" {

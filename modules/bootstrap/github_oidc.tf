@@ -2,7 +2,8 @@
 # long-lived access keys are stored in GitHub.
 #
 # Two roles keep plan and apply separate:
-#   * plan  - read-only, assumable from any branch or pull request in the repo.
+#   * plan  - read-only (plus lock files, saved plans and the project's
+#             secrets), assumable from any branch or pull request in the repo.
 #   * apply - can change infrastructure, assumable ONLY from the GitHub
 #             environment that requires a manual approval.
 
@@ -67,10 +68,56 @@ data "aws_iam_policy_document" "github_trust_apply" {
   }
 }
 
-# Both roles read and write state (S3 native locking writes a .tflock object)
-# and read the web server secret, because refreshing
-# aws_secretsmanager_secret_version calls GetSecretValue.
-data "aws_iam_policy_document" "terraform_state" {
+locals {
+  # The boundary every role the environments create must carry.
+  workload_boundary_arn = "arn:aws:iam::${local.account_id}:policy/${var.project}-workload-boundary"
+
+  # CI's own roles. The apply role must never be able to edit them, or an
+  # approved change could widen its own permissions or trust policy.
+  github_role_arns = "arn:aws:iam::${local.account_id}:role/${var.project}-github-*"
+}
+
+# Both roles read the web server secret, because refreshing
+# aws_secretsmanager_secret_version calls GetSecretValue (the smoke test reads
+# it too). The plan role is assumable from any branch, so it can only write
+# lock files and saved plans, never state itself.
+data "aws_iam_policy_document" "terraform_state_plan" {
+  statement {
+    sid       = "StateBucketList"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.state.arn]
+  }
+
+  statement {
+    sid       = "ReadState"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.state.arn}/*"]
+  }
+
+  statement {
+    sid    = "WriteLocksAndPlans"
+    effect = "Allow"
+    actions = [
+      "s3:PutObject",
+      "s3:DeleteObject"
+    ]
+    resources = [
+      "${aws_s3_bucket.state.arn}/*.tflock",
+      "${aws_s3_bucket.state.arn}/plans/*"
+    ]
+  }
+
+  statement {
+    sid       = "ReadProjectSecrets"
+    effect    = "Allow"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["arn:aws:secretsmanager:${local.region}:${local.account_id}:secret:${var.project}-*"]
+  }
+}
+
+data "aws_iam_policy_document" "terraform_state_apply" {
   statement {
     sid       = "StateBucketList"
     effect    = "Allow"
@@ -154,16 +201,15 @@ data "aws_iam_policy_document" "terraform_apply" {
     sid    = "ManageProjectInstanceRoles"
     effect = "Allow"
     actions = [
-      "iam:CreateRole",
       "iam:DeleteRole",
       "iam:GetRole",
       "iam:UpdateRole",
       "iam:UpdateAssumeRolePolicy",
       "iam:TagRole",
       "iam:UntagRole",
-      "iam:PutRolePolicy",
       "iam:GetRolePolicy",
       "iam:DeleteRolePolicy",
+      "iam:DetachRolePolicy",
       "iam:ListRolePolicies",
       "iam:ListAttachedRolePolicies",
       "iam:ListInstanceProfilesForRole",
@@ -181,15 +227,37 @@ data "aws_iam_policy_document" "terraform_apply" {
     ]
   }
 
-  # Only the AWS managed policies the project actually attaches.
+  # Creating a role or granting it permissions requires the workload boundary
+  # on that role, so nothing the apply role creates can exceed it.
   statement {
-    sid    = "AttachApprovedManagedPolicies"
+    sid    = "GrantOnlyWithinBoundary"
     effect = "Allow"
     actions = [
-      "iam:AttachRolePolicy",
-      "iam:DetachRolePolicy"
+      "iam:CreateRole",
+      "iam:PutRolePolicy",
+      "iam:PutRolePermissionsBoundary"
     ]
     resources = ["arn:aws:iam::${local.account_id}:role/${var.project}-*"]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [local.workload_boundary_arn]
+    }
+  }
+
+  # Only the AWS managed policies the project actually attaches.
+  statement {
+    sid       = "AttachApprovedManagedPolicies"
+    effect    = "Allow"
+    actions   = ["iam:AttachRolePolicy"]
+    resources = ["arn:aws:iam::${local.account_id}:role/${var.project}-*"]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [local.workload_boundary_arn]
+    }
 
     condition {
       test     = "ArnEquals"
@@ -202,6 +270,16 @@ data "aws_iam_policy_document" "terraform_apply" {
         "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
       ]
     }
+  }
+
+  # CI's own roles match the project prefix, so they are carved out
+  # explicitly. (The apply role has no IAM permissions on policies, so it
+  # can't edit or remove the boundary itself.)
+  statement {
+    sid       = "ProtectCIRoles"
+    effect    = "Deny"
+    actions   = ["iam:*"]
+    resources = [local.github_role_arns]
   }
 
   statement {
@@ -260,7 +338,7 @@ resource "aws_iam_role_policy_attachment" "github_plan_read_only" {
 resource "aws_iam_role_policy" "github_plan_state" {
   name   = "terraform-state"
   role   = aws_iam_role.github_plan.id
-  policy = data.aws_iam_policy_document.terraform_state.json
+  policy = data.aws_iam_policy_document.terraform_state_plan.json
 }
 
 # Apply role
@@ -280,7 +358,7 @@ resource "aws_iam_role_policy_attachment" "github_apply_read_only" {
 resource "aws_iam_role_policy" "github_apply_state" {
   name   = "terraform-state"
   role   = aws_iam_role.github_apply.id
-  policy = data.aws_iam_policy_document.terraform_state.json
+  policy = data.aws_iam_policy_document.terraform_state_apply.json
 }
 
 resource "aws_iam_role_policy" "github_apply_infrastructure" {

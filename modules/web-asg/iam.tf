@@ -46,7 +46,8 @@ resource "aws_iam_role" "web" {
   name        = "${var.name}-web"
   description = "Least-privilege role for the ${var.name} web servers."
 
-  assume_role_policy = data.aws_iam_policy_document.assume_role.json
+  assume_role_policy   = data.aws_iam_policy_document.assume_role.json
+  permissions_boundary = var.permissions_boundary
 }
 
 resource "aws_iam_role_policy" "web" {

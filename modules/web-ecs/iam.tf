@@ -26,7 +26,8 @@ resource "aws_iam_role" "instances" {
   name        = "${var.name}-ecs-instance"
   description = "Role for the ${var.name} ECS container instances (ECS agent)."
 
-  assume_role_policy = data.aws_iam_policy_document.ec2_assume_role.json
+  assume_role_policy   = data.aws_iam_policy_document.ec2_assume_role.json
+  permissions_boundary = var.permissions_boundary
 }
 
 resource "aws_iam_role_policy_attachment" "instances_ecs_agent" {
@@ -64,7 +65,8 @@ resource "aws_iam_role" "task_execution" {
   name        = "${var.name}-ecs-task-execution"
   description = "ECS task execution role for the ${var.name} nginx service."
 
-  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume_role.json
+  assume_role_policy   = data.aws_iam_policy_document.ecs_tasks_assume_role.json
+  permissions_boundary = var.permissions_boundary
 }
 
 resource "aws_iam_role_policy" "task_execution" {

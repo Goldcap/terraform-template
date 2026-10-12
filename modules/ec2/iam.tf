@@ -20,7 +20,8 @@ resource "aws_iam_role" "this" {
   name        = var.name
   description = "Least-privilege role for the ${var.name} instance."
 
-  assume_role_policy = data.aws_iam_policy_document.assume_role[0].json
+  assume_role_policy   = data.aws_iam_policy_document.assume_role[0].json
+  permissions_boundary = var.permissions_boundary
 }
 
 resource "aws_iam_role_policy" "this" {

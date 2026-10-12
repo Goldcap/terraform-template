@@ -91,3 +91,10 @@ variable "metrics_namespace" {
 
   description = "CloudWatch namespace the CloudWatch agent publishes memory metrics to"
 }
+
+variable "permissions_boundary" {
+  type    = string
+  default = null
+
+  description = "ARN of the IAM permissions boundary to set on every role this module creates (the bootstrap stack's workload_boundary_arn)"
+}
