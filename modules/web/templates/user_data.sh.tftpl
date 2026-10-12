@@ -1,0 +1,96 @@
+#!/bin/bash
+# cloud-init user data for the web servers (Amazon Linux 2023).
+# Installs nginx, publishes the Hello World page, protects /admin/ with
+# credentials from Secrets Manager and starts the CloudWatch agent.
+#
+# No `set -x`: it would write the admin password to the cloud-init log.
+set -euo pipefail
+
+# Outbound access goes through the NAT, which may still be booting when the
+# first web server launches - retry for up to ~5 minutes.
+for attempt in $(seq 1 30); do
+  dnf install -y nginx amazon-cloudwatch-agent jq && break
+  [ "$attempt" -eq 30 ] && exit 1
+  sleep 10
+done
+
+# --- Instance identity (IMDSv2) ---------------------------------------------
+TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+imds() {
+  curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" "http://169.254.169.254/latest/meta-data/$1"
+}
+INSTANCE_ID=$(imds instance-id)
+AZ=$(imds placement/availability-zone)
+
+# --- Web content ------------------------------------------------------------
+cat > /usr/share/nginx/html/index.html <<HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Hello, World!</title>
+</head>
+<body>
+  <h1>Hello, World!</h1>
+  <p>Served by $INSTANCE_ID in $AZ</p>
+</body>
+</html>
+HTML
+
+mkdir -p /usr/share/nginx/html/admin
+cat > /usr/share/nginx/html/admin/index.html <<'HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Admin</title>
+</head>
+<body>
+  <h1>Admin area</h1>
+  <p>You authenticated with credentials stored in AWS Secrets Manager.</p>
+</body>
+</html>
+HTML
+
+# --- Admin credentials from Secrets Manager ---------------------------------
+SECRET=$(aws secretsmanager get-secret-value \
+  --region "${region}" \
+  --secret-id "${admin_secret_arn}" \
+  --query SecretString --output text)
+ADMIN_USER=$(jq -r .username <<<"$SECRET")
+ADMIN_HASH=$(jq -r .password <<<"$SECRET" | openssl passwd -apr1 -stdin)
+unset SECRET
+
+install -m 0640 -o root -g nginx /dev/null /etc/nginx/.htpasswd
+printf '%s:%s\n' "$ADMIN_USER" "$ADMIN_HASH" > /etc/nginx/.htpasswd
+
+# --- nginx ------------------------------------------------------------------
+cat > /etc/nginx/conf.d/hardening.conf <<'NGINX'
+server_tokens off;
+NGINX
+
+# Included inside the default server block by the packaged nginx.conf.
+cat > /etc/nginx/default.d/app.conf <<'NGINX'
+location = ${health_check_path} {
+    access_log off;
+    default_type text/plain;
+    return 200 "ok";
+}
+
+location /admin/ {
+    auth_basic           "Restricted";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+}
+NGINX
+
+nginx -t
+systemctl enable --now nginx
+
+# --- CloudWatch agent (memory metrics) --------------------------------------
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'JSON'
+${cloudwatch_agent_config}
+JSON
+
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 -s \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json

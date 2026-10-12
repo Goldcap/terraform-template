@@ -1,0 +1,80 @@
+# Load balancer: HTTP in from the allowed CIDRs, HTTP out to the web servers only.
+resource "aws_security_group" "alb" {
+  name        = "${var.name}-alb"
+  description = "Application Load Balancer: HTTP from clients, HTTP to web servers"
+  vpc_id      = var.vpc_id
+
+  tags = { Name = "${var.name}-alb" }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_http" {
+  for_each = toset(var.alb_ingress_cidrs)
+
+  security_group_id = aws_security_group.alb.id
+  description       = "HTTP from clients"
+
+  cidr_ipv4   = each.value
+  ip_protocol = "tcp"
+  from_port   = 80
+  to_port     = 80
+}
+
+resource "aws_vpc_security_group_egress_rule" "alb_to_web" {
+  security_group_id = aws_security_group.alb.id
+  description       = "HTTP to web servers"
+
+  referenced_security_group_id = aws_security_group.web.id
+  ip_protocol                  = "tcp"
+  from_port                    = 80
+  to_port                      = 80
+}
+
+# Web servers: no CIDR-based ingress at all. HTTP is accepted only from the
+# load balancer and the bastion, and SSH only from the bastion.
+resource "aws_security_group" "web" {
+  name        = "${var.name}-web"
+  description = "Web servers: HTTP from ALB and bastion, SSH from bastion"
+  vpc_id      = var.vpc_id
+
+  tags = { Name = "${var.name}-web" }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "web_http_from_alb" {
+  security_group_id = aws_security_group.web.id
+  description       = "HTTP from the load balancer"
+
+  referenced_security_group_id = aws_security_group.alb.id
+  ip_protocol                  = "tcp"
+  from_port                    = 80
+  to_port                      = 80
+}
+
+resource "aws_vpc_security_group_ingress_rule" "web_http_from_bastion" {
+  security_group_id = aws_security_group.web.id
+  description       = "HTTP from the bastion host"
+
+  referenced_security_group_id = var.bastion_security_group_id
+  ip_protocol                  = "tcp"
+  from_port                    = 80
+  to_port                      = 80
+}
+
+resource "aws_vpc_security_group_ingress_rule" "web_ssh_from_bastion" {
+  security_group_id = aws_security_group.web.id
+  description       = "SSH from the bastion host"
+
+  referenced_security_group_id = var.bastion_security_group_id
+  ip_protocol                  = "tcp"
+  from_port                    = 22
+  to_port                      = 22
+}
+
+resource "aws_vpc_security_group_egress_rule" "web_https" {
+  security_group_id = aws_security_group.web.id
+  description       = "HTTPS via NAT for packages, CloudWatch and Secrets Manager"
+
+  cidr_ipv4   = "0.0.0.0/0"
+  ip_protocol = "tcp"
+  from_port   = 443
+  to_port     = 443
+}
