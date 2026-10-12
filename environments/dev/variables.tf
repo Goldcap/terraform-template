@@ -165,3 +165,20 @@ variable "monthly_budget_usd" {
 
   description = "Monthly AWS Budget in USD (null disables the budget)"
 }
+
+variable "assume_role_arn" {
+  type    = string
+  default = null
+
+  description = <<-EOT
+    IAM role Terraform assumes for every AWS call (and, for EKS, for cluster
+    tokens). Lets any automation - GitHub Actions, Jenkins, Atlantis, a
+    laptop - run as a dedicated deployment role instead of whatever
+    credentials it starts with. Never run Terraform as the root user.
+  EOT
+
+  validation {
+    condition     = var.assume_role_arn == null || can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/", var.assume_role_arn))
+    error_message = "assume_role_arn must be an IAM role ARN."
+  }
+}

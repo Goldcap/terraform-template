@@ -16,6 +16,16 @@ terraform {
 provider "aws" {
   region = var.region
 
+  # Optional: run as a dedicated deployment role (see var.assume_role_arn).
+  dynamic "assume_role" {
+    for_each = var.assume_role_arn == null ? [] : [var.assume_role_arn]
+
+    content {
+      role_arn     = assume_role.value
+      session_name = "terraform-${var.project}"
+    }
+  }
+
   default_tags {
     tags = {
       Project   = var.project

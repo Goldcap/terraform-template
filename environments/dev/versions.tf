@@ -29,6 +29,16 @@ terraform {
 provider "aws" {
   region = var.region
 
+  # Optional: run as a dedicated deployment role (see var.assume_role_arn).
+  dynamic "assume_role" {
+    for_each = var.assume_role_arn == null ? [] : [var.assume_role_arn]
+
+    content {
+      role_arn     = assume_role.value
+      session_name = "terraform-${var.project}"
+    }
+  }
+
   # Applied to every taggable resource, which makes cost allocation and
   # cleanup straightforward.
   default_tags {
@@ -51,7 +61,10 @@ provider "helm" {
     exec = {
       api_version = "client.authentication.k8s.io/v1beta1"
       command     = "aws"
-      args        = ["eks", "get-token", "--cluster-name", "${local.name}-eks", "--region", var.region, "--output", "json"]
+      args = concat(
+        ["eks", "get-token", "--cluster-name", "${local.name}-eks", "--region", var.region, "--output", "json"],
+        var.assume_role_arn == null ? [] : ["--role-arn", var.assume_role_arn]
+      )
     }
   }
 }

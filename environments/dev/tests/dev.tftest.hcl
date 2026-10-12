@@ -172,3 +172,13 @@ run "rejects_weights_for_unknown_platforms" {
 
   expect_failures = [var.platform_weights]
 }
+
+run "rejects_an_assume_role_arn_that_is_not_a_role" {
+  command = plan
+
+  variables {
+    assume_role_arn = "arn:aws:iam::123456789012:user/someone"
+  }
+
+  expect_failures = [var.assume_role_arn]
+}

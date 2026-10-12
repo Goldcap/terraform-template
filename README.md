@@ -229,6 +229,27 @@ modules are shared.
 
 ## Deploying
 
+### Credentials: run as an IAM role, never root
+
+Terraform should always run as a dedicated IAM role, never with root-user
+credentials (the root user can't even assume roles):
+
+- **CI** already does: GitHub Actions assumes the plan and apply roles over
+  OIDC, with no stored keys.
+- **Anything else** (Jenkins, Atlantis, a laptop) sets `assume_role_arn`. The
+  AWS provider assumes that role for every call, and the EKS token command uses
+  it too. Put the same role in `backend.hcl` (`assume_role = { role_arn = … }`)
+  so state access uses it as well. The starting identity only needs
+  `sts:AssumeRole` on that role, ideally with MFA.
+
+```bash
+terraform apply -var assume_role_arn=arn:aws:iam::123456789012:role/your-deployment-role
+```
+
+The one exception is the very first bootstrap apply in a new account: it
+creates the CI roles, so it runs as an administrator (an IAM Identity Center or
+IAM admin role, not root).
+
 ### 1. Bootstrap (once per AWS account)
 
 Creates the encrypted, versioned S3 state bucket and the GitHub Actions OIDC

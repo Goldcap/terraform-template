@@ -16,3 +16,7 @@ alarm_email = "you@example.com"
 # web_min_size        = 1
 # web_max_size        = 3
 # monthly_budget_usd  = 10
+
+# Run as a dedicated IAM role rather than your starting credentials (and
+# never as the root user):
+# assume_role_arn = "arn:aws:iam::123456789012:role/your-deployment-role"

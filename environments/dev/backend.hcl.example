@@ -2,3 +2,9 @@
 # The bucket name is printed by the bootstrap stack's state_bucket output.
 bucket = "hello-world-tfstate-123456789012-us-east-1"
 region = "us-east-1"
+
+# When running as a deployment role (assume_role_arn), the backend should use
+# it too:
+# assume_role = {
+#   role_arn = "arn:aws:iam::123456789012:role/your-deployment-role"
+# }
