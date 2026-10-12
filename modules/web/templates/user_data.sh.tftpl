@@ -9,7 +9,7 @@ set -euo pipefail
 # Outbound access goes through the NAT, which may still be booting when the
 # first web server launches - retry for up to ~5 minutes.
 for attempt in $(seq 1 30); do
-  dnf install -y nginx amazon-cloudwatch-agent jq && break
+  dnf install -y nginx amazon-cloudwatch-agent jq openssl && break
   [ "$attempt" -eq 30 ] && exit 1
   sleep 10
 done
