@@ -1,4 +1,4 @@
-# Terraform AWS Hello World: Bastion, ALB, Auto Scaling and Monitoring
+# Terraform AWS Hello World: Bastion, ALB, EC2/ECS Auto Scaling and Monitoring
 
 A small but production-shaped AWS environment, built with Terraform to show
 infrastructure-as-code best practice: a custom VPC, a bastion host, a
@@ -7,8 +7,13 @@ auto scaling, CloudWatch monitoring with SNS alerts, a GitHub Actions pipeline
 with a manually approved apply, and automated tests. It is designed to fit
 within (or very close to) the AWS Free Tier.
 
+The web tier can run on **plain EC2 (an Auto Scaling Group)**, on **ECS**, or
+on both at once. Each platform is an independent toggle, and the load balancer
+splits traffic between whichever are enabled (see [Web platforms](#web-platforms)).
+
 - [Architecture](#architecture)
 - [How each requirement is met](#how-each-requirement-is-met)
+- [Web platforms](#web-platforms)
 - [Repository layout](#repository-layout)
 - [Prerequisites and assumptions](#prerequisites-and-assumptions)
 - [Deploying](#deploying)
@@ -33,17 +38,19 @@ flowchart LR
             nat[NAT instance<br/>t2.micro]
         end
         subgraph private[Private subnets - 2 AZs]
-            asg[Auto Scaling Group 1-3 x t2.micro<br/>nginx + CloudWatch agent]
+            asg[EC2 platform: Auto Scaling Group<br/>1-3 x t2.micro, nginx + CloudWatch agent]
+            ecs[ECS platform: nginx service, 1-3 tasks<br/>on a 1-3 x t2.micro capacity provider]
         end
     end
 
-    alb -- HTTP :80 --> asg
+    alb -- "HTTP :80 (weighted)" --> asg
+    alb -- "HTTP, dynamic ports (weighted)" --> ecs
     bastion -- SSH :22 / HTTP :80 --> asg
-    asg -- HTTPS :443 --> nat --> internet([Internet / AWS APIs])
+    asg & ecs -- HTTPS :443 --> nat --> internet([Internet / AWS APIs])
 
-    asg -. metrics .-> cw[CloudWatch<br/>alarms + dashboard]
+    asg & ecs -. metrics .-> cw[CloudWatch<br/>alarms + dashboard]
     cw -. CPU above 70% .-> sns[SNS topic] -. email .-> inbox([You])
-    asg -. GetSecretValue .-> sm[Secrets Manager]
+    asg & ecs -. admin credentials .-> sm[Secrets Manager]
 ```
 
 | Component | Where | Purpose |
@@ -51,9 +58,10 @@ flowchart LR
 | VPC | 2 AZs, one public and one private `/24` per AZ | Network isolation; the ALB needs two AZs |
 | Bastion host | Public subnet, t2.micro | The only SSH entry point; SSH allowed from your IP only |
 | NAT instance | Public subnet, t2.micro | Outbound internet for private instances (packages, AWS APIs) without a NAT Gateway's cost |
-| Application Load Balancer | Public subnets | Public entry point for the web app, health-checks `/health` |
-| Auto Scaling Group | Private subnets, t2.micro, min 1 / max 3 | Web servers; scale on average CPU (target 50%) |
-| Secrets Manager secret | n/a | Basic-auth credentials for the `/admin/` page |
+| Application Load Balancer | Public subnets | Public entry point; forwards to every enabled platform by weight and health-checks `/health` |
+| EC2 platform (`enable_ec2`) | Private subnets, t2.micro, min 1 / max 3 | nginx on an Auto Scaling Group; scales on average CPU (target 50%) |
+| ECS platform (`enable_ecs`) | Private subnets, t2.micro container instances | nginx task definition and service (1-3 tasks, scaling on CPU) on an ECS cluster whose EC2 capacity provider grows the instances to fit |
+| Secrets Manager secret | n/a | Basic-auth credentials for the `/admin/` page, shared by both platforms |
 | CloudWatch | n/a | CPU and memory metrics, alarms, dashboard |
 | SNS topic | n/a | Emails you when an alarm fires (CPU above 70%, memory, no healthy hosts) |
 | AWS Budget | n/a | Emails you at 80% of actual or 100% of forecast monthly spend |
@@ -64,21 +72,58 @@ flowchart LR
 |---|---|
 | t2.micro EC2 in a custom VPC with public and private subnets | [`modules/network`](modules/network) (wraps `terraform-aws-modules/vpc`); `instance_type` defaults to `t2.micro` everywhere |
 | Bastion host in the public subnet | `module "bastion"` in [`environments/dev/main.tf`](environments/dev/main.tf), built on the generic [`modules/ec2`](modules/ec2) |
-| Web server on EC2 in the private subnet | [`modules/web/asg.tf`](modules/web/asg.tf): launch template plus ASG in the private subnets, no public IPs |
-| HTTP (80) to the web server from the bastion only | [`modules/web/security_groups.tf`](modules/web/security_groups.tf): web SG allows port 80 only from the bastion SG **and the ALB SG** (the ALB has to reach the targets; see [Security notes](#security-notes)) |
+| Web server on EC2 in the private subnet | [`modules/web-asg/asg.tf`](modules/web-asg/asg.tf): launch template plus ASG in the private subnets, no public IPs |
+| HTTP (80) to the web server from the bastion only | [`modules/web-asg/security_groups.tf`](modules/web-asg/security_groups.tf): web SG allows port 80 only from the bastion SG **and the ALB SG** (the ALB has to reach the targets; see [Security notes](#security-notes)) |
 | SSH to the bastion from your IP | `ssh_allowed_cidrs` in [`environments/dev`](environments/dev/variables.tf): validation only accepts specific single-host `/32` IPs |
-| Least-privilege IAM roles for instances | Web: publish metrics only to the `CWAgent` namespace, `ec2:DescribeTags`, and read **its own** secret ([`modules/web/iam.tf`](modules/web/iam.tf)). Bastion: `ec2:DescribeInstances` only ([`environments/dev/main.tf`](environments/dev/main.tf)). NAT: no role at all ([`modules/ec2`](modules/ec2) only creates a role when given a policy) |
-| "Hello, World!" web application | nginx page that also shows which instance and AZ served it |
-| Automated deployment (cloud-init) | [`modules/web/templates/user_data.sh.tftpl`](modules/web/templates/user_data.sh.tftpl) |
-| ALB in front of the web server | [`modules/web/alb.tf`](modules/web/alb.tf) |
-| ASG min 1 / max 3, triggered by CPU | [`modules/web/asg.tf`](modules/web/asg.tf): target-tracking policy on `ASGAverageCPUUtilization` |
-| CloudWatch CPU and memory monitoring | CPU from `AWS/EC2`; memory (`mem_used_percent`) from the CloudWatch agent; [dashboard](modules/monitoring/dashboard.tf) |
-| Alarm when CPU is above 70%, notified via SNS | [`modules/monitoring/alarms.tf`](modules/monitoring/alarms.tf) and [`sns.tf`](modules/monitoring/sns.tf) (email subscription) |
+| Least-privilege IAM roles for instances | Web: publish metrics only to the `CWAgent` namespace, `ec2:DescribeTags`, and read **its own** secret ([`modules/web-asg/iam.tf`](modules/web-asg/iam.tf)). ECS: task execution role can only write its log group and read the admin secret; the nginx container gets **no** task role ([`modules/web-ecs/iam.tf`](modules/web-ecs/iam.tf)). Bastion: `ec2:DescribeInstances` only ([`environments/dev/main.tf`](environments/dev/main.tf)). NAT: no role at all ([`modules/ec2`](modules/ec2) only creates a role when given a policy) |
+| "Hello, World!" web application | nginx page that also shows which platform, instance or task, and AZ served it |
+| Automated deployment (cloud-init) | EC2: [`modules/web-asg/templates/user_data.sh.tftpl`](modules/web-asg/templates/user_data.sh.tftpl). ECS: [`modules/web-ecs/templates/start_nginx.sh.tftpl`](modules/web-ecs/templates/start_nginx.sh.tftpl) |
+| ALB in front of the web server | [`modules/alb`](modules/alb): shared ALB with weighted forwarding to each enabled platform |
+| ASG min 1 / max 3, triggered by CPU | [`modules/web-asg/asg.tf`](modules/web-asg/asg.tf): target-tracking policy on `ASGAverageCPUUtilization`. ECS: 1-3 tasks on `ECSServiceAverageCPUUtilization`, 1-3 instances via the capacity provider |
+| CloudWatch CPU and memory monitoring | EC2: CPU from `AWS/EC2`, memory (`mem_used_percent`) from the CloudWatch agent. ECS: CPU and memory from the free `AWS/ECS` service metrics. [Dashboard](modules/monitoring/dashboard.tf) shows both |
+| Alarm when CPU is above 70%, notified via SNS | [`modules/monitoring/alarms.tf`](modules/monitoring/alarms.tf): one CPU alarm per platform, plus [`sns.tf`](modules/monitoring/sns.tf) (email subscription) |
 | Free tier and cost documentation | [Cost optimisation](#cost-optimisation) |
 | CI: `fmt`, `validate`, plan, apply with manual approval, test via ALB | [`.github/workflows/terraform.yml`](.github/workflows/terraform.yml) |
-| **Bonus:** infrastructure testing | `terraform test` unit tests in `modules/*/tests` plus the AWS CLI/curl [`tests/smoke_test.sh`](tests/smoke_test.sh) |
-| **Bonus:** Secrets Manager | `/admin/` credentials generated by Terraform as an ephemeral value, written write-only (never in state), read by instances at boot ([`modules/web/secrets.tf`](modules/web/secrets.tf)) |
-| **Bonus:** containerisation | Not implemented; see [Limitations](#limitations-and-next-steps) |
+| **Bonus:** infrastructure testing | `terraform test` unit tests in `modules/*/tests` and `environments/dev/tests`, plus the AWS CLI/curl [`tests/smoke_test.sh`](tests/smoke_test.sh) |
+| **Bonus:** Secrets Manager | `/admin/` credentials generated by Terraform as an ephemeral value and written write-only, so they're never in state ([`environments/dev/secrets.tf`](environments/dev/secrets.tf)). EC2 instances read them at boot; the ECS task definition injects them with `secrets` / `valueFrom` |
+| **Bonus:** containerisation | nginx on Amazon ECS: cluster, EC2 capacity provider, task definition, service and target group ([`modules/web-ecs`](modules/web-ecs)) |
+
+## Web platforms
+
+The same Hello World site (`/`, `/health` and the password-protected
+`/admin/`) can be served by any combination of platforms. Each one is a module
+with its own target group, and the shared load balancer forwards to every
+enabled platform using weighted target groups:
+
+| Variable | Default | Platform |
+|---|---|---|
+| `enable_ec2` | `true` | nginx on an EC2 Auto Scaling Group ([`modules/web-asg`](modules/web-asg)) |
+| `enable_ecs` | `true` | nginx on ECS with an EC2 capacity provider ([`modules/web-ecs`](modules/web-ecs)) |
+| `platform_weights` | `{}` (equal) | Traffic split, e.g. `{ ec2 = 1, ecs = 3 }` |
+
+At least one platform must be enabled. Running two side by side shows how you
+would migrate between them with no downtime: shift the weights, then switch
+the old one off. Each response names the platform that served it:
+
+```console
+$ for i in $(seq 6); do curl -s "$URL" | grep -o 'Served by [A-Z0-9]* [a-z]*'; done
+Served by EC2 instance
+Served by ECS task
+Served by ECS task
+Served by EC2 instance
+...
+```
+
+**ECS details.** The cluster's capacity provider manages a t2.micro Auto Scaling
+Group (1-3 instances): ECS adds instances when tasks don't fit and protects
+instances that are running tasks from scale-in. Tasks use bridge networking
+with dynamic host ports, so several fit on one t2.micro. The ALB reaches them on
+the ephemeral port range, and only the ALB's security group can. The image
+comes from Amazon ECR Public (`nginx:stable-alpine`), which avoids Docker Hub
+rate limits. The admin credentials are injected from Secrets Manager by ECS
+(`secrets` / `valueFrom`). At start-up the container hashes the password into
+an htpasswd file and `exec`s nginx without it, so the plaintext isn't left in
+nginx's environment.
 
 ## Repository layout
 
@@ -91,9 +136,11 @@ flowchart LR
 │   ├── bootstrap/           # State bucket, GitHub OIDC provider, plan/apply roles
 │   ├── network/             # VPC, subnets, NAT instance/gateway, S3 endpoint
 │   ├── ec2/                 # Generic hardened EC2 instance (used for the bastion and NAT instance)
-│   ├── web/                 # ALB, launch template, ASG, scaling, cloud-init, secret
-│   └── monitoring/          # SNS, CloudWatch alarms and dashboard, AWS Budget
-│   (each module has tests/*.tftest.hcl unit tests)
+│   ├── alb/                 # Shared ALB: security group, weighted HTTP listener
+│   ├── web-asg/             # EC2 platform: launch template, ASG, CPU scaling, cloud-init, target group
+│   ├── web-ecs/             # ECS platform: cluster, capacity provider, task definition, service, target group
+│   └── monitoring/          # SNS, per-platform CloudWatch alarms, dashboard, AWS Budget
+│   (each module, and environments/dev, has tests/*.tftest.hcl unit tests)
 ├── tests/smoke_test.sh      # Post-deploy checks against the live environment
 ├── .github/workflows/       # CI/CD (terraform.yml) and manual teardown (destroy.yml)
 └── .tflint.hcl              # TFLint rules (Terraform recommended + AWS ruleset)
@@ -233,7 +280,7 @@ and it doesn't need to: everything is configured by cloud-init.
 
 ```bash
 # Unit tests: no AWS credentials needed, nothing is created
-for m in modules/*/; do (cd "$m" && terraform init -backend=false >/dev/null && terraform test); done
+for d in modules/*/ environments/dev/; do (cd "$d" && terraform init -backend=false >/dev/null && terraform test); done
 
 # Smoke test against the live environment (reads terraform outputs)
 tests/smoke_test.sh environments/dev
@@ -243,16 +290,20 @@ The smoke test waits up to 10 minutes for the app, then checks:
 
 - `/` returns 200 with "Hello, World!", and `/health` returns 200.
 - `/admin/` returns 401 without credentials or with wrong ones, and 200 with
-  the credentials from Secrets Manager.
+  the credentials from Secrets Manager, on every platform.
 - nginx doesn't reveal its version.
-- The ASG is min 1 / max 3 with a CPU target-tracking policy.
-- All targets are healthy, and web servers have no public IP and are t2.micro.
-- The CPU alarm threshold is 70% and it notifies SNS.
+- **Every enabled platform** actually serves requests through the ALB, and all
+  of its targets are healthy.
+- EC2: the ASG is min 1 / max 3 with a CPU target-tracking policy.
+- ECS: the service is active and scales 1-3 tasks on CPU, and its credentials
+  come from Secrets Manager.
+- Web servers and container instances have no public IP and are t2.micro.
+- Each platform's CPU alarm threshold is 70%, and it notifies SNS.
 
 ### Manually
 
-**Load balancer.** Refresh a few times once more than one instance is
-running; the page names the instance that served it.
+**Load balancer.** Refresh a few times: the page names the platform (EC2
+instance or ECS task), the instance or task ID, and the AZ that served it.
 
 ```bash
 curl "$(terraform -chdir=environments/dev output -raw web_url)"
@@ -286,6 +337,16 @@ To SSH straight to a web server through the bastion from your machine:
 ssh -J ec2-user@"$BASTION" ec2-user@<web-private-ip>
 ```
 
+**ECS:**
+
+```bash
+CLUSTER=$(terraform -chdir=environments/dev output -raw ecs_cluster_name)
+SERVICE=$(terraform -chdir=environments/dev output -raw ecs_service_name)
+aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+  --query 'services[0].{status:status,running:runningCount,desired:desiredCount,taskDefinition:taskDefinition}'
+aws logs tail "/ecs/hello-world-dev/nginx" --since 30m   # container logs
+```
+
 **Negative checks.** Web servers have no public IP, so they're unreachable from
 the internet. SSH to the bastion from any other IP times out.
 
@@ -313,9 +374,11 @@ switches.
 | **NAT instance (t2.micro) instead of a NAT Gateway.** Toggle with `nat_gateway_enabled = true` | NAT Gateway is about $33/month plus $0.045/GB processed |
 | **t2.micro everywhere**, standard (not unlimited) CPU credits | Free-tier eligible; standard credits can't produce surprise burst charges |
 | **Basic (5-minute) EC2 monitoring**, not detailed | Detailed monitoring is billed per instance |
-| **Only one custom metric**: memory, aggregated per ASG rather than per instance | 10 custom metrics are free; per-instance dimensions would grow with scaling |
-| **5 alarms, 1 dashboard, 1 budget** | Within the free 10 alarms, 3 dashboards and 2 budgets |
-| **8 GB gp3 volumes** (3 x 8 GB) | Within the 30 GB free EBS allowance |
+| **Only one custom metric**: memory, aggregated per ASG rather than per instance. ECS uses the free `AWS/ECS` metrics, and Container Insights stays off | 10 custom metrics are free; per-instance dimensions would grow with scaling, and Container Insights is billed per metric |
+| **ECS on an EC2 capacity provider (t2.micro), not Fargate**, with bridge networking so several tasks share an instance | Fargate isn't free-tier; an always-on 0.25 vCPU task is about $9/month |
+| **ECS image from ECR Public**, 7-day log retention | No private registry to pay for; container logs don't accumulate |
+| **1 dashboard, 1 budget**; 5 alarms with only EC2 enabled, 12 with EC2 and ECS (including AWS-managed target-tracking alarms) | 3 dashboards, 2 budgets and 10 alarms are free; alarms beyond that are $0.10/month each |
+| **8 GB gp3 volumes** for the bastion, NAT and EC2 web servers | Within the 30 GB free EBS allowance on their own. The ECS-optimized AMI needs 30 GB, so enabling ECS adds about $2.40/month of storage |
 | **S3 gateway endpoint** | Free, and keeps S3 traffic off the NAT |
 | **No ALB access logs, VPC flow logs or CloudWatch Logs shipping** | Avoids log storage and ingestion charges; easy to add |
 | **SSE-S3 instead of KMS** for state, and **no KMS on SNS** | Avoids $1/month per customer managed key |
@@ -327,9 +390,11 @@ switches.
 **Running cost:**
 
 - **Accounts on the legacy 12-month free tier:** 750 instance-hours/month
-  covers one t2.micro running continuously. This stack runs three (bastion, NAT,
-  one web server), so expect about 1,460 billable hours (~$17/month). The ALB
-  (750 hours) and public IPv4 addresses (750 hours) are largely covered.
+  covers one t2.micro running continuously. With only EC2 enabled the stack runs
+  three (bastion, NAT, one web server), so expect about 1,460 billable hours
+  (~$17/month). Enabling ECS adds one more t2.micro (~$8.50/month) plus its
+  30 GB volume. The ALB (750 hours) and public IPv4 addresses (750 hours) are
+  largely covered.
 - **Accounts created after 15 July 2025:** AWS uses a credit-based free plan
   instead, so usage is drawn from your credits. Check which instance types are
   eligible in your account; `instance_type` is a variable if you need, say,
@@ -355,6 +420,13 @@ soon as you're done**.
   else.
 - **SSH:** only to the bastion, only from `ssh_allowed_cidrs`. Validation
   rejects `0.0.0.0/0`. Web servers accept SSH only from the bastion.
+- **ECS:** container instances accept task traffic only from the ALB's security
+  group (on the dynamic port range) and SSH only from the bastion. The IMDS hop
+  limit of 1 stops containers on the bridge network from reaching instance
+  credentials. nginx runs with no task role, so it has no AWS credentials, and
+  the execution role can only write its log group and read the admin secret.
+  A deployment circuit breaker rolls back task definitions that never become
+  healthy.
 - **Instances:** IMDSv2 required (blocks SSRF-style credential theft),
   encrypted root volumes, AMIs from AWS's public SSM parameter, and nginx
   `server_tokens off`. New AMIs roll out through ASG instance refresh
@@ -370,9 +442,11 @@ soon as you're done**.
 - **Secrets:** the `/admin/` password is generated with an *ephemeral*
   `random_password` and stored via Secrets Manager's *write-only*
   `secret_string_wo`. It never appears in Terraform state, plan files or CI
-  artifacts. Instances read it at boot with their IAM role; the user-data
-  script doesn't use `set -x`, so the password isn't written to logs. Rotate
-  it by incrementing `admin_password_version`.
+  artifacts. EC2 instances read it at boot with their IAM role (the user-data
+  script doesn't use `set -x`, so the password isn't written to logs). ECS
+  injects it into the container from the task definition's `secrets`, so it's
+  never in the task definition itself. Rotate it by incrementing
+  `admin_password_version`.
 - **State:** a private, versioned, encrypted S3 bucket that denies non-TLS
   access and has `prevent_destroy` set.
 
@@ -424,10 +498,16 @@ running.
 - **Bastion vs. Session Manager:** AWS Systems Manager Session Manager could
   replace the bastion entirely (no open SSH port, IAM-audited sessions). The
   bastion is kept because the exercise asks for one.
-- **Containerisation (bonus) is not implemented.** The natural next step is to
-  build the page into an nginx image in ECR and run it on ECS Fargate behind
-  the same ALB. That adds cost (Fargate isn't in the free tier) and two VPC
-  endpoints or NAT traffic for image pulls.
+- **ECS container instances aren't refreshed automatically.** The EC2
+  platform rolls new AMIs out via instance refresh. For ECS, a new
+  ECS-optimized AMI creates a new launch template version that applies to newly
+  launched instances; replacing existing ones (drain, then terminate) is a
+  manual or scheduled step. Fargate would remove instance management entirely,
+  at a cost.
+- **The site is configured at start-up**, by cloud-init on EC2 and a
+  container entrypoint script on ECS. A production pipeline would bake it into
+  a versioned image (an AMI, or a container image in ECR) and deploy by image
+  tag.
 - **Observability:** ship nginx access logs to CloudWatch Logs, enable ALB
   access logs and VPC flow logs, and use 1-minute detailed monitoring for
   faster scaling. Each has a cost, which is why they're off by default.
