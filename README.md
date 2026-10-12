@@ -7,6 +7,13 @@ auto scaling, CloudWatch monitoring with SNS alerts, a GitHub Actions pipeline
 with a manually approved apply, and automated tests. It is designed to fit
 within (or very close to) the AWS Free Tier.
 
+The configuration follows patterns I have used on multiple enterprise
+projects: the module layout, OIDC-based CI with an approval-gated apply, the
+bootstrap stack and the security defaults, scaled down here to a small,
+self-contained example. Some code here was written up to 3 years ago, on other 
+projects, but this represents a fully operational IaC deployment, ready for
+multiple environment tiers, further security hardening, and extension.
+
 The web tier can run on **plain EC2 (an Auto Scaling Group)**, on **ECS**, on
 **EKS**, or any combination. Each platform is an independent toggle, and the
 load balancer splits traffic between whichever are enabled (see
@@ -78,8 +85,8 @@ flowchart LR
 | Web server on EC2 in the private subnet | [`modules/web-asg/asg.tf`](modules/web-asg/asg.tf): launch template plus ASG in the private subnets, no public IPs |
 | HTTP (80) to the web server from the bastion only | [`modules/web-asg/security_groups.tf`](modules/web-asg/security_groups.tf): web SG allows port 80 only from the bastion SG **and the ALB SG** (the ALB has to reach the targets; see [Security notes](#security-notes)) |
 | SSH to the bastion from your IP | `ssh_allowed_cidrs` in [`environments/dev`](environments/dev/variables.tf): validation only accepts specific single-host `/32` IPs |
-| Least-privilege IAM roles for instances | Web: publish metrics only to the `CWAgent` namespace, `ec2:DescribeTags`, and read **its own** secret ([`modules/web-asg/iam.tf`](modules/web-asg/iam.tf)). ECS: task execution role can only write its log group and read the admin secret; the nginx container gets **no** task role ([`modules/web-ecs/iam.tf`](modules/web-ecs/iam.tf)). EKS: per-service-account roles via Pod Identity; nginx's can only read the admin secret ([`modules/web-eks/pod_identity.tf`](modules/web-eks/pod_identity.tf)). Bastion: `ec2:DescribeInstances` only ([`environments/dev/main.tf`](environments/dev/main.tf)). NAT: no role at all ([`modules/ec2`](modules/ec2) only creates a role when given a policy) |
-| "Hello, World!" web application | nginx page that also shows which platform, instance or task, and AZ served it |
+| Least-privilege IAM roles for instances | Web: publish metrics only to the `CWAgent` namespace, `ec2:DescribeTags`, and read the shared admin secret ([`modules/web-asg/iam.tf`](modules/web-asg/iam.tf)). ECS: task execution role can only write its log group and read the admin secret; the nginx container gets **no** task role; container instances use AWS's managed ECS agent policy ([`modules/web-ecs/iam.tf`](modules/web-ecs/iam.tf)). EKS: per-service-account roles via Pod Identity; nginx's can only read the admin secret ([`modules/web-eks/pod_identity.tf`](modules/web-eks/pod_identity.tf)). Bastion: `ec2:DescribeInstances` only ([`environments/dev/main.tf`](environments/dev/main.tf)). NAT: no role at all ([`modules/ec2`](modules/ec2) only creates a role when given a policy). Every role carries a permissions boundary from the bootstrap stack |
+| "Hello, World!" web application | nginx page that also shows which platform served it: the EC2 instance or ECS task and its AZ, or the EKS pod and node |
 | Automated deployment (cloud-init) | EC2: [`modules/web-asg/templates/user_data.sh.tftpl`](modules/web-asg/templates/user_data.sh.tftpl). ECS: [`modules/web-ecs/templates/start_nginx.sh.tftpl`](modules/web-ecs/templates/start_nginx.sh.tftpl) |
 | ALB in front of the web server | [`modules/alb`](modules/alb): shared ALB with weighted forwarding to each enabled platform |
 | ASG min 1 / max 3, triggered by CPU | [`modules/web-asg/asg.tf`](modules/web-asg/asg.tf): target-tracking policy on `ASGAverageCPUUtilization`. ECS: 1-3 tasks on `ECSServiceAverageCPUUtilization`, 1-3 instances via the capacity provider. EKS: HorizontalPodAutoscaler, 1-3 pods at 50% CPU |
@@ -183,7 +190,9 @@ In a single `enable_eks=false` apply it has no cluster to talk to, so Terraform
 forgets the releases instead of uninstalling them.
 
 Your IAM identity needs cluster access for `kubectl`. The cluster creator gets
-it automatically; add others with `eks_admin_principal_arns`.
+it automatically; add others with `eks_admin_principal_arns`. If Terraform ran
+with `assume_role_arn`, that role is the creator, so add
+`--role-arn <that role>` to `aws eks update-kubeconfig`.
 
 ## Repository layout
 
@@ -322,6 +331,10 @@ providers current. Until the repository variables below are set, only
 1. Apply the [bootstrap](#1-bootstrap-once-per-aws-account) stack.
 2. **Settings → Environments → New environment** named `production`, then add
    yourself under **Required reviewers**. This is the manual approval gate.
+   Also set **Deployment branches and tags** to `main` only: the apply role
+   trusts this environment, and a reviewer approves a deployment rather than
+   the workflow code, so a job on another branch must not be able to use it.
+   On a team, enable **Prevent self-review** too.
 3. Add the repository **variables** and **secrets** (Settings → Secrets and
    variables → Actions). None of these are credentials. Your IP and email are
    stored as secrets only so GitHub masks them, because a public repository's
@@ -387,8 +400,9 @@ The smoke test waits up to 10 minutes for the app, then checks:
 
 ### Manually
 
-**Load balancer.** Refresh a few times: the page names the platform (EC2
-instance or ECS task), the instance or task ID, and the AZ that served it.
+**Load balancer.** Refresh a few times: the page names the platform that
+served it, with the EC2 instance or ECS task and its AZ, or the EKS pod and
+node.
 
 ```bash
 curl "$(terraform -chdir=environments/dev output -raw web_url)"
@@ -478,7 +492,10 @@ throttled once credits are spent; that's expected.
   runs with all capabilities dropped except the four it needs, and without
   privilege escalation. The API endpoint is public (authentication still
   required) because GitHub-hosted runners have no fixed IPs; restrict it with
-  `endpoint_public_access_cidrs` when using self-hosted runners.
+  the `web-eks` module's `endpoint_public_access_cidrs` input when using
+  self-hosted runners. One caveat: Pod Identity gives *every* container in the
+  pod the role's credentials, so although only the init container mounts the
+  secret, nginx could fetch it too.
 - **Instances:** IMDSv2 required (blocks SSRF-style credential theft),
   encrypted root volumes, AMIs from AWS's public SSM parameter, and nginx
   `server_tokens off`. New AMIs roll out through ASG instance refresh
@@ -486,11 +503,18 @@ throttled once credits are spent; that's expected.
   place.
 - **IAM:** each role has only what it uses (see the
   [requirement table](#how-each-requirement-is-met)). CI uses short-lived OIDC
-  credentials with no stored access keys. A **read-only** role runs plans,
-  including on pull requests. A separate **apply** role is assumable only from
-  the approval-gated `production` environment, and its write access is limited
-  to this project's services, region and name-prefixed IAM, SNS, Secrets
-  Manager and Budgets resources.
+  credentials with no stored access keys. A **plan** role runs plans,
+  including on pull requests. It is read-only apart from Terraform lock files,
+  saved plans and the project's secrets (refreshing the secret version and
+  the smoke test both read the value), and it can't write state. A separate
+  **apply** role is assumable only from the approval-gated `production`
+  environment, and its write access is limited to this project's services,
+  region and name-prefixed IAM, SNS, Secrets Manager, CloudWatch Logs and
+  Budgets resources. Every role it creates must carry the bootstrap stack's
+  **permissions boundary**, which caps it at the services the workloads use,
+  and it can't modify the CI roles themselves. Saved plans (which contain the
+  inputs in clear) are kept in the private state bucket, not as public
+  workflow artifacts.
 - **Secrets:** the `/admin/` password is generated with an *ephemeral*
   `random_password` and stored via Secrets Manager's *write-only*
   `secret_string_wo`. It never appears in Terraform state, plan files or CI
@@ -546,12 +570,15 @@ running.
 - **NAT availability:** a single NAT instance is a single point of failure for
   *outbound* traffic from the private subnets. Serving traffic through the ALB
   is unaffected. For production, set `nat_gateway_enabled = true`, or use one
-  NAT per AZ.
+  NAT per AZ. Switching replaces the private subnets' default route; if the
+  new route is created before the old one is gone, the apply fails with
+  `RouteAlreadyExists` and simply needs re-running.
 - **SSH and the bastion would be disabled in favor of SSM Session Manager.**
   The bastion exists because the exercise asks for one; it isn't the production
   design. With AWS Systems Manager Session Manager, instances need the SSM agent
   (already on Amazon Linux 2023), an instance role with
-  `AmazonSSMManagedInstanceCore`, and a path to the SSM endpoints (the NAT, or
+  `AmazonSSMManagedInstanceCore` (added to the bootstrap stack's allow-list and
+  permissions boundary), and a path to the SSM endpoints (the NAT, or
   `ssm`/`ssmmessages`/`ec2messages` VPC endpoints). Then:
     - Remove the bastion, the key pair and every port 22 security group rule:
       nothing accepts inbound connections at all.
