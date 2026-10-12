@@ -1,0 +1,20 @@
+#!/bin/bash
+# Configure Amazon Linux 2023 as a NAT instance for the private subnets.
+set -euxo pipefail
+
+dnf install -y iptables-services
+
+echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/90-nat.conf
+sysctl --system
+
+IFACE=$(ip route show default | awk '/default/ {print $5; exit}')
+
+# Start from the packaged defaults, then replace the FORWARD/NAT rules.
+systemctl enable --now iptables
+iptables -F FORWARD
+iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+iptables -A FORWARD -s ${vpc_cidr} -o "$IFACE" -j ACCEPT
+iptables -A FORWARD -j REJECT
+iptables -t nat -F POSTROUTING
+iptables -t nat -A POSTROUTING -s ${vpc_cidr} -o "$IFACE" -j MASQUERADE
+service iptables save
